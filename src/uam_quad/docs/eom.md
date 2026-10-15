@@ -139,14 +139,14 @@ feedforward on.
 ### 4.7 Arm joints
 The servos are position-controlled, so (like Flying Hand) the arm is modeled kinematically with a
 first-order lag, $\beta\,\dot\theta + \theta = \theta_{\text{cmd}}$. In the MuJoCo model each joint is a
-PD position servo ($k_p = 20$ N·m/rad, $k_v = 0.6$, torque limit 6 N·m). The base equations above
+PD position servo ($k_p = 20$ N·m/rad, $k_v = 0.6$; torque limit 6 N·m in the generic default, 4.1 N·m = XM430-W350 stall at 12 V in the F450 + OpenMANIPULATOR-X model). The base equations above
 hold for any arm motion; how $\theta$ follows $\theta_\text{cmd}$ is a separate, simpler model.
 
 ## 5. Hover and linearization
 
 **Trim.** At rest ($\omega = 0$, $a_O = 0$, $\dot\theta = 0$, level):
 $T = mg$ and $M = -m\,c\times(-g e_3) = (m g\,c_y,\ -m g\,c_x,\ 0)$.
-With the default arm pose $\theta = (-0.6, 1.0, 0.4)$: $m = 1.84$ kg, $c = (0.046, 0, 0.018)$ m, so
+With the default arm pose $\theta = (-0.6, 1.0, 0.4)$ on the **generic default model** (capsule arm, 8 N rotors; not the F450 + OpenMANIPULATOR-X): $m = 1.84$ kg, $c = (0.046, 0, 0.018)$ m, so
 $M_y = -0.825$ N·m. Solving $A f = (mg, 0, -0.825, 0)$: front rotors 5.81 N, rear 3.22 N.
 That's 73% of the 8 N limit before any maneuvering.
 
@@ -176,7 +176,7 @@ $\dot c$, $\ddot c$, $\dot J_O$, $\dot h$, not by the model (changing the step c
 
 ## References
 - T. Lee, M. Leok, N. H. McClamroch, "Geometric tracking control of a quadrotor UAV on SE(3)," IEEE CDC, 2010.
-- R. Mahony, V. Kumar, P. Corke, "Multirotor aerial vehicles: Modeling, estimation, and control of quadrotor," IEEE Robotics & Automation Magazine, 19(3), 2012.
+- R. Mahony, V. Kumar, P. Corke, "Multirotor aerial vehicles: Modeling, estimation, and control of quadrotor," IEEE Robotics & Automation Magazine, 19(3), pp. 20–32, 2012.
 - R. Featherstone, *Rigid Body Dynamics Algorithms*, Springer, 2008.
-- F. Ruggiero, V. Lippiello, A. Ollero, "Aerial manipulation: A literature review," IEEE Robotics and Automation Letters, 3(3), 2018.
-- G. He et al., "Flying Hand," arXiv 2504.10334, 2025 (kinematic arm + L1 for the coupling terms).
+- F. Ruggiero, V. Lippiello, A. Ollero, "Aerial manipulation: A literature review," IEEE Robotics and Automation Letters, 3(3), pp. 1957–1964, 2018.
+- G. He, X. Guo, L. Tang, Y. Zhang, M. Mousaei, J. Xu, J. Geng, S. Scherer, G. Shi, "Flying Hand: End-Effector-Centric Framework for Versatile Aerial Manipulation Teleoperation and Policy Learning," arXiv 2504.10334, 2025 (kinematic arm + L1 for the coupling terms).

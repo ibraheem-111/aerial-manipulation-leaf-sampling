@@ -95,10 +95,11 @@ def f450_stock(**overrides) -> UAMConfig:
     """Generic stock DJI F450 with the DJI E310 propulsion system and a 3S battery.
 
     Sourced: frame 282 g, 450 mm diagonal, 800-1600 g takeoff weight (DJI F450 spec); E310 2312
-    960KV motors 60 g each, 9450 props, max thrust 800 g/rotor @ 12 V (7.85 N), recommended
-    350-400 g/rotor (DJI E310 spec). Estimated (not from a datasheet): 4 ESCs 25 g each, props 13 g
-    each, 3S 4000 mAh LiPo 330 g, autopilot + GPS + receiver 100 g -> 1.10 kg airframe, so
-    1.48 kg with the 3-DoF arm (370 g/rotor, inside DJI's recommended band). Inertia: motors, props
+    960KV motors 60 g each, 9450 props 13 g each, max thrust 800 g/rotor @ 12 V (7.85 N), recommended
+    takeoff weight 350 g/rotor @ 3S, 400 g/rotor @ 4S (DJI E310 spec). Estimated (not from a datasheet):
+    4 ESCs 25 g each (the E310 sheet lists 30 g, 43 g with cable; not yet updated, it would change the
+    results), 3S 4000 mAh LiPo 330 g, autopilot + GPS + receiver 100 g -> 1.10 kg airframe, so 1.62 kg with
+    the OpenMANIPULATOR-X arm (~405 g/rotor, above DJI's 350 g/rotor 3S recommendation). Inertia: motors, props
     and ESCs as point masses at the arm tips plus a 0.15 x 0.15 x 0.06 m central box (estimate).
     Motor lag 20 ms and yaw ratio 0.016 m are typical values, not E310 measurements.
     Uses the MRS F450 meshes for visuals and the PX4 quad-X motor order.

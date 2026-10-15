@@ -119,6 +119,6 @@ need a model good enough to predict with. Sections 4.3–4.5 of eom.md are that 
 ## Reading list (in order)
 1. Mahony, Kumar & Corke, "Multirotor aerial vehicles," IEEE RAM 2012: modeling and the cascade.
 2. Lee, Leok & McClamroch, CDC 2010: geometric control (what `controller.py` implements).
-3. Mellinger & Kumar, ICRA 2011: differential flatness and trajectory generation.
+3. D. Mellinger, V. Kumar, "Minimum snap trajectory generation and control for quadrotors," ICRA 2011, pp. 2520–2525: differential flatness and trajectory generation.
 4. PX4 docs, "Controller Diagrams": how the cascade looks in a real autopilot.
 5. Ruggiero, Lippiello & Ollero, RA-L 2018: aerial manipulation survey, for the arm coupling.

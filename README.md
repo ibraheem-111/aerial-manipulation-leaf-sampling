@@ -727,6 +727,7 @@ Weigh the real airframe and thrust-test the motors, then override `f450_stock(ba
 - OpenMANIPULATOR-X meshes and masses: [ROBOTIS open_manipulator](https://github.com/ROBOTIS-GIT/open_manipulator) (Apache-2.0), see `src/uam_quad/assets/arm/README.md`.
 - [MuJoCo](https://mujoco.org), [CasADi](https://web.casadi.org), [ACADOS](https://docs.acados.org).
 - Background:
-  - T. Lee, M. Leok, N. H. McClamroch, *Geometric tracking control of a quadrotor UAV on SE(3)*, CDC 2010.
-  - UMI-on-Air (arXiv 2510.02614): an inspiration for embodiment-aware aerial manipulation.
-  - Flying Hand (L1-adaptive whole-body control).
+  - T. Lee, M. Leok, N. H. McClamroch, *Geometric tracking control of a quadrotor UAV on SE(3)*, 49th IEEE CDC, 2010.
+  - S. Jain, Y. Shethwala, J. Das, *Towards Model Predictive Control for Acrobatic Quadrotor Flights*, arXiv 2401.17418, 2024 (M.S. thesis, ASU, 2023).
+  - H. Gupta et al., *UMI-on-Air: Embodiment-Aware Guidance for Embodiment-Agnostic Visuomotor Policies*, arXiv 2510.02614, 2025: an inspiration for embodiment-aware aerial manipulation.
+  - G. He et al., *Flying Hand: End-Effector-Centric Framework for Versatile Aerial Manipulation Teleoperation and Policy Learning*, arXiv 2504.10334, 2025 (whole-body MPC + L1 adaptive control).
