@@ -69,6 +69,15 @@ class MPCParams:
     terminal_scale: float = 5.0
     max_tilt: float = 0.6         # |q_x|, |q_y| bound (≈ 69 deg tilt) as a sanity box
     coupling: bool = True         # False = ablation: drop arm-motion terms (h, h_dot, c_dot, c_ddot, J_dot)
+    # Input mode. "thrusts": u = [rotor thrusts f_1..n, q_cmd] (MPC is the whole flight controller).
+    # "rates": u = [collective thrust T, body-rate setpoint w_cmd (3, FLU), q_cmd] -- what PX4 offboard
+    # takes (vehicle_rates_setpoint). PX4's rate loop is modelled as a torque source (see WholeBodyModel).
+    input_mode: str = "thrusts"
+    tau_rate: float = 0.05        # closed-loop time constant of PX4's rate controller [s]
+    w_rate_cmd: tuple = (0.5, 0.5, 0.5)   # cost on the body-rate setpoint (rates mode)
+    max_rate: tuple = (3.0, 3.0, 1.5)     # |w_cmd| bounds [rad/s] (rates mode)
+    w_thcmd_rel: float = 0.5      # rates mode: cost on q_cmd - q (commanded arm acceleration) instead of q_cmd - q_ref;
+                                  # damps a 12.5 Hz arm-command limit cycle seen with the weak absolute cost
     codegen_dir: str = field(default_factory=lambda: os.path.join(BUILD, "uam_wbmpc"))
 
 
@@ -83,14 +92,17 @@ class WholeBodyModel:
         self.n = n
         A = cfg.allocation_matrix()
 
+        rates = prm.input_mode == "rates"
+        self.rates = rates
+        self.nu_flight = 4 if rates else n         # [T, w_cmd] or rotor thrusts
         x = ca.SX.sym("x", NX)
-        u = ca.SX.sym("u", n + 3)
+        u = ca.SX.sym("u", self.nu_flight + 3)
         f_ext = ca.SX.sym("f_ext", 3)          # external force on the end effector, world frame [N] (contact)
         f_dist = ca.SX.sym("f_dist", 3)        # estimated disturbance force on the base, world frame [N] (observer)
         thdd_in = ca.SX.sym("thdd", 3)
         p, q, v, w = x[0:3], x[3:7], x[7:10], x[10:13]
         th, thd = x[13:16], x[16:19]
-        f, thcmd = u[:n], u[n:]
+        f, thcmd = u[: self.nu_flight], u[self.nu_flight:]
 
         # --- arm kinematics and mass terms (base frame) -------------------------------------
         phis = [th[0], th[0] + th[1], th[0] + th[1] + th[2]]
@@ -134,18 +146,35 @@ class WholeBodyModel:
         # --- base Newton-Euler about O (body frame) -----------------------------------------
         R = _quat_to_R(q)
         gB = -P.g * (R.T @ ca.DM([0, 0, 1]))
-        wrench = ca.DM(A) @ f
         f_ext_B = R.T @ f_ext
-        F_B = ca.vertcat(0, 0, wrench[0]) + f_ext_B + R.T @ f_dist   # contact + estimated disturbance ...
-        M_B = wrench[1:4] + ca.cross(ee_B, f_ext_B)            # ... at the end effector, so it also twists the base
-        Mmat = ca.vertcat(ca.horzcat(m * ca.DM.eye(3), -m * _hat(c)), ca.horzcat(m * _hat(c), J))
-        rhs_t = F_B + m * gB - m * (ca.cross(w, ca.cross(w, c)) + 2 * ca.cross(w, cdot) + cddot)
-        rhs_r = M_B + m * ca.cross(c, gB) - Jdot @ w - ca.cross(w, J @ w) - hdot - ca.cross(w, h)
-        acc = ca.solve(Mmat, ca.vertcat(rhs_t, rhs_r))
-        pdd = R @ acc[0:3]
-        wd = acc[3:6]
-
-        self.base_acc = ca.Function("base_acc", [x, f, thdd_in, f_ext, f_dist], [pdd, wd])  # for validation
+        rhs_corr = m * (ca.cross(w, ca.cross(w, c)) + 2 * ca.cross(w, cdot) + cddot)
+        if not rates:
+            wrench = ca.DM(A) @ f
+            F_B = ca.vertcat(0, 0, wrench[0]) + f_ext_B + R.T @ f_dist   # contact + estimated disturbance ...
+            M_B = wrench[1:4] + ca.cross(ee_B, f_ext_B)            # ... at the end effector, so it also twists the base
+            Mmat = ca.vertcat(ca.horzcat(m * ca.DM.eye(3), -m * _hat(c)), ca.horzcat(m * _hat(c), J))
+            rhs_t = F_B + m * gB - rhs_corr
+            rhs_r = M_B + m * ca.cross(c, gB) - Jdot @ w - ca.cross(w, J @ w) - hdot - ca.cross(w, h)
+            acc = ca.solve(Mmat, ca.vertcat(rhs_t, rhs_r))
+            pdd = R @ acc[0:3]
+            wd = acc[3:6]
+            self.base_acc = ca.Function("base_acc", [x, f, thdd_in, f_ext, f_dist], [pdd, wd])  # for validation
+        else:
+            # PX4's rate loop as a torque source inside the full coupled equations:
+            #   M_rate = J (w_cmd - w) / tau_rate + w x J w - m c x g_B
+            # The last term is the steady gravity moment of the arm-shifted CoM, which the rate loop's
+            # integrator cancels. The arm's motion-reaction terms (h_dot, J_dot w, c_ddot) are NOT
+            # cancelled, so the MPC still predicts how moving the arm disturbs the base.
+            T, w_cmd = f[0], f[1:4]
+            M_rate = J @ (w_cmd - w) / prm.tau_rate + ca.cross(w, J @ w) - m * ca.cross(c, gB)
+            F_B = ca.vertcat(0, 0, T) + f_ext_B + R.T @ f_dist
+            M_B = M_rate + ca.cross(ee_B, f_ext_B)
+            Mmat = ca.vertcat(ca.horzcat(m * ca.DM.eye(3), -m * _hat(c)), ca.horzcat(m * _hat(c), J))
+            rhs_t = F_B + m * gB - rhs_corr
+            rhs_r = M_B + m * ca.cross(c, gB) - Jdot @ w - ca.cross(w, J @ w) - hdot - ca.cross(w, h)
+            acc = ca.solve(Mmat, ca.vertcat(rhs_t, rhs_r))
+            pdd = R @ acc[0:3]
+            wd = acc[3:6]
 
         wa = prm.arm_wn
         thdd = wa ** 2 * (thcmd - th) - 2 * wa * thd
@@ -154,6 +183,7 @@ class WholeBodyModel:
         xdot = ca.vertcat(v, qdot, ca.substitute(pdd, thdd_in, thdd), ca.substitute(wd, thdd_in, thdd), thd, thdd)
 
         self.x, self.u, self.xdot, self.p = x, u, xdot, ca.vertcat(f_ext, f_dist)
+        self.thrust_max_total = float(n * cfg.thrust_max)
         self.f_dyn = ca.Function("f_dyn", [x, u, self.p], [xdot])
         self.ee_world = p + R @ ee_B
         self.f_ee = ca.Function("ee_world", [x], [self.ee_world])
@@ -175,7 +205,8 @@ class WholeBodyMPC:
         self.th_nom = np.asarray(th_nominal, dtype=float)
 
         am = AcadosModel()
-        am.name = f"uam_wbmpc_{n}r" + ("" if prm.coupling else "_nocpl")
+        am.name = f"uam_wbmpc_{n}r" + ("" if prm.coupling else "_nocpl") + ("_rates" if wb.rates else "")
+        self.nf = nf = wb.nu_flight
         am.x, am.u, am.p = wb.x, wb.u, wb.p
         xd = ca.SX.sym("xdot", NX)
         am.xdot = xd
@@ -183,7 +214,9 @@ class WholeBodyMPC:
         am.f_impl_expr = xd - wb.xdot
 
         x, u = wb.x, wb.u
-        y = ca.vertcat(wb.ee_world, x[0:3], x[4:7], x[7:10], x[10:13], x[13:16], x[16:19], u)
+        self.thcmd_rel = wb.rates
+        u_cost = ca.vertcat(u[:nf], u[nf:] - x[13:16]) if wb.rates else u
+        y = ca.vertcat(wb.ee_world, x[0:3], x[4:7], x[7:10], x[10:13], x[13:16], x[16:19], u_cost)
         y_e = ca.vertcat(wb.ee_world, x[0:3], x[4:7], x[7:10], x[10:13], x[13:16], x[16:19])
         am.cost_y_expr, am.cost_y_expr_e = y, y_e
         self.ny, self.ny_e = y.shape[0], y_e.shape[0]
@@ -192,8 +225,10 @@ class WholeBodyMPC:
         ocp.model = am
         ocp.solver_options.N_horizon = prm.N
         ocp.solver_options.tf = prm.N * prm.dt
+        w_flight = [prm.w_f / n] + list(prm.w_rate_cmd) if wb.rates else [prm.w_f] * n
+        w_arm_cmd = prm.w_thcmd_rel if wb.rates else prm.w_thcmd
         W = np.diag(np.r_[[prm.w_ee] * 3, [prm.w_base] * 3, prm.w_att, [prm.w_v] * 3, [prm.w_w] * 3,
-                          [prm.w_th] * 3, [prm.w_thd] * 3, [prm.w_f] * n, [prm.w_thcmd] * 3])
+                          [prm.w_th] * 3, [prm.w_thd] * 3, w_flight, [w_arm_cmd] * 3])
         ocp.cost.cost_type = ocp.cost.cost_type_e = "NONLINEAR_LS"
         ocp.cost.W = W
         ocp.cost.W_e = prm.terminal_scale * W[: self.ny_e, : self.ny_e]
@@ -202,9 +237,13 @@ class WholeBodyMPC:
 
         lo = [r[0] for r in cfg.joint_ranges]
         hi = [r[1] for r in cfg.joint_ranges]
-        ocp.constraints.lbu = np.r_[np.zeros(n), lo]
-        ocp.constraints.ubu = np.r_[np.full(n, cfg.thrust_max), hi]
-        ocp.constraints.idxbu = np.arange(n + 3)
+        if wb.rates:
+            ocp.constraints.lbu = np.r_[0.0, -np.asarray(prm.max_rate), lo]
+            ocp.constraints.ubu = np.r_[wb.thrust_max_total, prm.max_rate, hi]
+        else:
+            ocp.constraints.lbu = np.r_[np.zeros(n), lo]
+            ocp.constraints.ubu = np.r_[np.full(n, cfg.thrust_max), hi]
+        ocp.constraints.idxbu = np.arange(nf + 3)
         ocp.constraints.lbx = np.r_[[-prm.max_tilt] * 2, lo]
         ocp.constraints.ubx = np.r_[[prm.max_tilt] * 2, hi]
         ocp.constraints.idxbx = np.array([4, 5, 13, 14, 15])
@@ -240,7 +279,8 @@ class WholeBodyMPC:
     def set_target(self, ee_target, base_anchor, u_hover, th_ref=None, yaw=0.0):
         th_ref = self.th_nom if th_ref is None else np.asarray(th_ref, dtype=float)
         qv = np.array([0.0, 0.0, np.sin(yaw / 2)])
-        yref = np.r_[ee_target, base_anchor, qv, np.zeros(3), np.zeros(3), th_ref, np.zeros(3), u_hover[: self.n], th_ref]
+        yref = np.r_[ee_target, base_anchor, qv, np.zeros(3), np.zeros(3), th_ref, np.zeros(3), u_hover[: self.nf],
+                     np.zeros(3) if self.thcmd_rel else th_ref]
         for k in range(self.prm.N):
             self.solver.set(k, "yref", yref)
         self.solver.set(self.prm.N, "yref", yref[: self.ny_e])
@@ -253,7 +293,7 @@ class WholeBodyMPC:
         for k in range(self.prm.N + 1):
             y = np.r_[ee_traj[k], base_traj[k], qv, base_vel[k], np.zeros(3), th_ref, np.zeros(3)]
             if k < self.prm.N:
-                self.solver.set(k, "yref", np.r_[y, u_hover[: self.n], th_ref])
+                self.solver.set(k, "yref", np.r_[y, u_hover[: self.nf], np.zeros(3) if self.thcmd_rel else th_ref])
             else:
                 self.solver.set(k, "yref", y)
 

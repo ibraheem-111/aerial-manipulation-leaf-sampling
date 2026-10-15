@@ -17,7 +17,9 @@ Thrust. PX4 maps desired thrust to a motor command through THR_MDL_FAC (k):
 The bridge uses the same k, so PX4's inversion is exact. The motor lag stays in MuJoCo's rotor
 actuators (20 ms filter).
 
-The arm is not driven by PX4. Its servos hold `arm_target`, which a ROS 2 node or script can set.
+The arm is not driven by PX4. `arm_cmd` (set over ROS 2 by the MPC, see scripts/px4_sim.py --ros) goes
+through the same critically damped reference model the MPC assumes (wbmpc.ArmReference), standing in for
+the servo's motion profile; the servos track it with gravity feedforward.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ import mujoco
 import numpy as np
 
 from .model import UAMConfig
+from .wbmpc import ArmReference
 
 T_FLIP = np.array([1.0, -1.0, -1.0])
 G = 9.80665
@@ -56,12 +59,14 @@ def px4_params(cfg: UAMConfig, thr_mdl_fac: float) -> dict:
 
 class MujocoPX4Bridge:
     def __init__(self, model, data, cfg: UAMConfig, arm_target, thr_mdl_fac=1.0, port=4560,
-                 sensor_hz=250, gps_hz=10, noise=True, seed=0):
+                 sensor_hz=250, gps_hz=10, noise=True, seed=0, arm_wn=25.0):
         from pymavlink import mavutil
         self.m, self.d, self.cfg = model, data, cfg
         self.n = cfg.n_rotors
         self.k = thr_mdl_fac
-        self.arm_target = np.asarray(arm_target, dtype=float)
+        self.arm_cmd = np.asarray(arm_target, dtype=float).copy()
+        self.arm_ref = ArmReference(self.arm_cmd, arm_wn)
+        self.qa = [model.jnt_qposadr[model.joint(f"arm_j{i}").id] for i in (1, 2, 3)]
         self.qv = [model.jnt_dofadr[model.joint(f"arm_j{i}").id] for i in (1, 2, 3)]
         self.sub = int(round(1.0 / sensor_hz / model.opt.timestep))      # physics steps per sensor message
         self.dt = self.sub * model.opt.timestep
@@ -120,6 +125,9 @@ class MujocoPX4Bridge:
             self.u = np.clip(np.array(msg.controls[: self.n]), 0.0, 1.0) if self.armed else np.zeros(self.n)
             return
 
+    def joint_state(self):
+        return self.d.qpos[self.qa].copy(), self.d.qvel[self.qv].copy()
+
     def thrusts(self):
         rel = self.k * self.u ** 2 + (1.0 - self.k) * self.u
         return rel * self.cfg.thrust_max
@@ -130,8 +138,9 @@ class MujocoPX4Bridge:
         self.receive_actuators()
         f = self.thrusts()
         for _ in range(self.sub):
+            th_r, _ = self.arm_ref.step(self.arm_cmd, self.m.opt.timestep)
             self.d.ctrl[: self.n] = f
-            self.d.ctrl[self.n:] = self.arm_target + self.d.qfrc_bias[self.qv] / self.cfg.servo_kp
+            self.d.ctrl[self.n:] = th_r + self.d.qfrc_bias[self.qv] / self.cfg.servo_kp
             mujoco.mj_step(self.m, self.d)
         self.t_us += int(round(self.dt * 1e6))
         self.k_step += 1

@@ -37,11 +37,15 @@ fi
 if [ -f /opt/ros/kilted/setup.bash ]; then
   echo "== px4_msgs for ROS 2 Kilted =="
   mkdir -p "$ROOT/ros2_px4_ws/src"
-  [ -d "$ROOT/ros2_px4_ws/src/px4_msgs" ] || git clone --branch "release/${PX4_TAG#v}" --depth 1 \
-    https://github.com/PX4/px4_msgs.git "$ROOT/ros2_px4_ws/src/px4_msgs" 2>/dev/null || \
-    git clone --depth 1 https://github.com/PX4/px4_msgs.git "$ROOT/ros2_px4_ws/src/px4_msgs"
+  MSGS_BRANCH="release/$(echo "${PX4_TAG#v}" | cut -d. -f1,2)"      # e.g. release/1.16 (must match PX4)
+  [ -d "$ROOT/ros2_px4_ws/src/px4_msgs" ] || git clone --branch "$MSGS_BRANCH" --depth 1 \
+    https://github.com/PX4/px4_msgs.git "$ROOT/ros2_px4_ws/src/px4_msgs"
   set +u; source /opt/ros/kilted/setup.bash; set -u
   (cd "$ROOT/ros2_px4_ws" && colcon build --symlink-install)
+  echo "== Python 3.12 venv for ROS 2 nodes (.venv-ros) =="
+  [ -d "$ROOT/.venv-ros" ] || uv venv -q "$ROOT/.venv-ros" --python /usr/bin/python3.12 --system-site-packages
+  VIRTUAL_ENV="$ROOT/.venv-ros" uv pip install -q -e "$ROOT/src/uam_quad[mpc]" pymavlink \
+    -e "$EXT/acados/interfaces/acados_template"
 else
   echo "ROS 2 Kilted not found in /opt/ros/kilted: run setup/install_ros2_px4.sh, then this script again."
 fi

@@ -4,9 +4,12 @@ Simulation of an **F450 quadrotor with a 3-DoF arm on top** that flies to a plan
 touches or presses on a surface. This is the groundwork for leaf sample return.
 RAS 593 applied project (ASU, Prof. Jnaneshwar Das), fall 2026.
 
-Everything runs in **MuJoCo 3.3.2** from Python. The controllers write rotor thrusts and arm joint targets
-directly to the simulator. On hardware the same commands would go to PX4 (offboard mode) and to the
-Dynamixel bus (see [Path to hardware](#path-to-hardware)).
+The physics is **MuJoCo 3.3.2**, and there are two ways to run it:
+- **PX4 + ROS 2 (the main setup):** MuJoCo is the simulator behind unmodified PX4 v1.16.2 SITL. The
+  whole-body MPC is a ROS 2 (Kilted) node that sends PX4 thrust + body rates and commands the arm over ROS 2
+  topics, the same interfaces the real F450 will use. See [Run with PX4 and ROS 2](#run-with-px4-and-ros-2).
+- **Standalone Python:** the controller writes rotor thrusts and arm targets straight into MuJoCo. This is
+  fast, for controller development and the experiments in [How to run](#how-to-run).
 
 ![F450 + OpenMANIPULATOR-X pressing on a board](docs/media/push_frame.jpg)
 
@@ -54,7 +57,7 @@ Check that the setup works:
 cd src/uam_quad && python -m pytest -q tests    # 15 tests, about 3 s
 ```
 
-ROS 2 is **not** needed for the simulation. `setup/install_ros2_jazzy.sh` is there for the later hardware work.
+That's enough for the standalone experiments. For PX4 + ROS 2, see [Run with PX4 and ROS 2](#run-with-px4-and-ros-2).
 
 ## How to run
 
@@ -114,6 +117,122 @@ python check.py --solutions                 # reference solutions, 12/12
 ```
 
 ---
+
+## Run with PX4 and ROS 2
+
+```
+MuJoCo + bridge  <-- lockstep TCP 4560 -->  PX4 SITL v1.16.2  <-- uXRCE-DDS, UDP 8888 -->  ROS 2 Kilted
+(px4_sim.py)                                (unmodified)                                    ├─ MPC node (mpc_px4_node.py)
+  publishes /arm/joint_states, /sim/*                                                      └─ /arm/joint_command -> bridge
+```
+
+### One-time setup
+
+After `setup/install_sim.sh` (above):
+
+```bash
+bash setup/install_ros2_px4.sh   # needs sudo: ROS 2 Kilted (ros-base), colcon, ninja, ccache
+```
+```bash
+bash setup/build_px4.sh          # no sudo, about 15 min the first time
+```
+
+`build_px4.sh` builds:
+- PX4 v1.16.2 SITL in `external/PX4-Autopilot`;
+- the Micro XRCE-DDS Agent v2.4.3;
+- `px4_msgs` (release/1.16) in `ros2_px4_ws/`;
+- `.venv-ros`: a Python 3.12 venv that can import ROS 2, with MuJoCo, CasADi and ACADOS.
+
+ROS 2 Kilted runs on the system Python 3.12, which is why it gets its own venv; the standalone `.venv` is 3.11.
+
+### Fly it (three terminals, from the repo root)
+
+In each terminal, first run:
+
+```bash
+source setup/env_ros.sh
+```
+
+Terminal 1, MuJoCo + PX4. Add `--viewer` to watch:
+
+```bash
+cd src/uam_quad && python scripts/px4_sim.py --ros
+```
+
+Wait for `Ready for takeoff!` in `runs/uam_quad/px4_sitl.log`, then start terminal 2, the PX4 ↔ ROS 2 link:
+
+```bash
+MicroXRCEAgent udp4 -p 8888
+```
+
+Terminal 3, the whole-body MPC. It arms, climbs 1 m, moves the gripper and lands:
+
+```bash
+cd src/uam_quad && python scripts/mpc_px4_node.py
+```
+
+The node streams setpoints, switches PX4 to offboard mode and arms. Then it climbs 1 m, moves the gripper
+10 cm forward and 5 cm up and back, and lands at 20 s. Results go to `runs/uam_quad/px4/mpc_px4_run.json`.
+
+**Check without ROS 2:** PX4's own takeoff and landing over MAVLink:
+
+```bash
+cd src/uam_quad && python scripts/px4_takeoff_test.py
+```
+
+**Useful commands:**
+
+| What | Command |
+|---|---|
+| List topics | `ros2 topic list` |
+| PX4's state estimate | `ros2 topic echo /fmu/out/vehicle_odometry` |
+| Arm state | `ros2 topic echo /arm/joint_states` |
+| Move the arm by hand (MPC not running) | `ros2 topic pub --once /arm/joint_command sensor_msgs/msg/JointState "{position: [-0.6, 0.6, 0.4]}"` |
+| PX4 shell commands | `cd external/PX4-Autopilot/build/px4_sitl_default/rootfs && ../bin/px4-commander status` |
+| QGroundControl | Connects automatically on UDP 14550 |
+
+### How it works
+
+**Bridge** (`uam_quad/px4_bridge.py`), at 250 Hz in lockstep with PX4:
+- Sends PX4 `HIL_SENSOR` (IMU, magnetometer, barometer) and `HIL_GPS` at 10 Hz, with noise.
+- Receives `HIL_ACTUATOR_CONTROLS`: motor commands from 0 to 1, mapped to thrust with PX4's own
+  `THR_MDL_FAC` model.
+- Converts frames: MuJoCo's z-up world and FLU body ↔ PX4's NED/FRD, which flips y and z.
+- Configures the airframe without a PX4 fork: the F450 rotor geometry, yaw coefficient and thrust model go
+  in as `PX4_PARAM_*` overrides on the stock `none_iris` airframe (`px4_params()`).
+
+**MPC node** (`scripts/mpc_px4_node.py`): the whole-body MPC in **rates mode**
+(`MPCParams(input_mode="rates")`).
+- Inputs: collective thrust T, body-rate setpoint ω_cmd, and the arm command q_cmd.
+- PX4's rate loop is modelled as a torque source inside the coupled equations:
+
+$$M_{rate} = J\,(\omega_{cmd} - \omega)/\tau_{rate} + \omega\times J\omega - m\,c\times g_B$$
+
+- The last term is the steady gravity moment of the arm-shifted centre of mass, which PX4's rate integrator
+  cancels.
+- The arm's motion-reaction terms (ḣ, J̇ω, c̈) stay in the model, so the MPC still predicts how arm
+  motion disturbs the base.
+- τ_rate = 0.05 s for now; it should be identified from PX4.
+
+**Arm:** the bridge passes `/arm/joint_command` through the same critically damped reference model the MPC
+assumes (ω_a = 25 rad/s). The servos track it with gravity feedforward. On hardware this would be the
+Dynamixel's motion profile.
+
+### First results (2026-10-15)
+
+- **PX4 alone** (`px4_takeoff_test.py`):
+  - took off to 2.5 m, held position within about 5 cm, and landed;
+  - front motors ran at 0.81 vs rear 0.60, compensating for the arm's forward centre of mass;
+  - drifted 34 cm forward on takeoff before PX4's integrator caught up.
+- **Whole-body MPC through PX4 over ROS 2** (`mpc_px4_node.py`):
+  - the solver succeeded 100% of the time, with a 3 ms median solve;
+  - it held PX4's state estimate within 8 mm RMS;
+  - the gripper error against MuJoCo ground truth was 17–18 mm RMS while holding and 36 mm during the reach.
+- **Where the gripper error comes from:**
+  - Holding: mostly PX4's position estimate, which fuses simulated GPS (30 cm accuracy) and a barometer and
+    sits 1–2 cm off the truth. Indoor manipulation will need motion capture or VIO fed to PX4's estimator.
+  - During the reach: the test pins the base while moving the gripper, which leaves a steady offset of
+    about 22 mm.
 
 ## Notation
 
@@ -586,9 +705,9 @@ practice/                 MuJoCo cheat sheet, Q&A, graded exercises
 
 | In simulation | On the real F450 |
 |---|---|
-| The MPC writes 4 rotor thrusts to MuJoCo actuators | MPC → collective thrust + body rates (p, q, r) → PX4 offboard (`VehicleRatesSetpoint`) via ROS 2 / uXRCE-DDS. PX4 runs the rate loop and the mixer. Convert ENU/FLU → NED/FRD. |
-| Joint targets to MuJoCo position servos | Joint targets to Dynamixel XM430s over the U2D2 bus (position mode, ~100 Hz) |
-| State straight from the simulator (+ noise) | PX4 EKF2 + motion capture or VIO for pose, Dynamixel encoders for the arm |
+| **PX4 + ROS 2 setup:** MPC node → thrust + body rates → `/fmu/in/vehicle_rates_setpoint` → PX4 SITL (MuJoCo physics) | Same node, same topics, a real PX4 flight controller over uXRCE-DDS (serial or Ethernet) instead of SITL. PX4 runs the rate loop and the mixer. |
+| `/arm/joint_command` → bridge → MuJoCo position servos | `/arm/joint_command` → a Dynamixel ROS 2 driver → XM430s over the U2D2 bus |
+| PX4 EKF2 on simulated IMU, mag, baro, GPS | PX4 EKF2 + motion capture or VIO for pose, Dynamixel encoders for the arm |
 | Contact force from `mj_contactForce` | Fingertip load cell or force-sensitive resistor, or estimated from servo currents |
 
 Weigh the real airframe and thrust-test the motors, then override `f450_stock(base_mass=..., thrust_max=...)`.
