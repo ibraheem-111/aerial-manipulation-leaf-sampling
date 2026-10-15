@@ -1,0 +1,17 @@
+# Whitelist: only our code, docs and setup go into the repo.
+/*
+!/.gitignore
+!/README.md
+!/src/
+!/practice/
+!/setup/
+!/docs/
+
+# inside the whitelisted folders
+__pycache__/
+*.egg-info/
+*.pyc
+/setup/umi_env.sh
+/src/uam_quad/assets/arm/arm_only.png
+c_generated_code/
+/setup/umi_on_air_requirements.txt

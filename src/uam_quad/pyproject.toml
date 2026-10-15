@@ -1,0 +1,17 @@
+[project]
+name = "uam_quad"
+version = "0.1.0"
+description = "F450 quadrotor with a 3-DoF arm for aerial manipulation: MuJoCo model, equations of motion, PID/LQR/whole-body MPC, contact"
+requires-python = ">=3.10"
+dependencies = ["mujoco==3.3.2", "numpy<2", "scipy", "matplotlib", "pillow", "imageio", "imageio-ffmpeg"]
+
+[project.optional-dependencies]
+mpc = ["casadi==3.7.0"]          # + acados_template from the ACADOS checkout (setup/install_sim.sh)
+dev = ["pytest", "trimesh", "pycollada"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["uam_quad"]

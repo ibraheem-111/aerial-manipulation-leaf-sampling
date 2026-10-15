@@ -1,0 +1,391 @@
+{
+  "name": "planar 3-DoF pitch arm from ROBOTIS OpenMANIPULATOR-X (RM-X52-TNM)",
+  "license": "Apache-2.0 (Copyright ROBOTIS CO., LTD.); see README.md",
+  "sources": {
+    "repo": "https://github.com/ROBOTIS-GIT/open_manipulator",
+    "commit": "d31000d90c679af9c982e73de8b12d777c5ff7dd",
+    "urdf": "https://github.com/ROBOTIS-GIT/open_manipulator/blob/d31000d90c679af9c982e73de8b12d777c5ff7dd/open_manipulator_description/urdf/open_manipulator_x/open_manipulator_x_arm.urdf.xacro",
+    "meshes": "https://github.com/ROBOTIS-GIT/open_manipulator/tree/d31000d90c679af9c982e73de8b12d777c5ff7dd/open_manipulator_description/meshes/open_manipulator_x",
+    "servo_datasheet": "https://emanual.robotis.com/docs/en/dxl/x/xm430-w350/",
+    "omx_spec": "https://emanual.robotis.com/docs/en/platform/openmanipulator_x/specification/"
+  },
+  "convention": "joints rotate about +y; zero angle = link along +x; +q pitches the tip down (toward -z). Each link frame origin is on its joint axis.",
+  "theta1_rad": 1.385448377,
+  "theta1_note": "OMX link3 is L-shaped (joint2->joint3 = (0.024, 0, 0.128) m); arm_l1 frame = OMX link3 frame rotated by Ry(-theta1) so joint3 lies on +x. OMX home pose (all zero) = arm_j1 = -theta1 (upper arm ~up), arm_j2 = +theta1, arm_j3 = 0.",
+  "links": [
+    {
+      "body": "arm_l1",
+      "source_link": "OMX link3",
+      "joint": "arm_j1",
+      "source_joint": "OMX joint2",
+      "joint_axis": [
+        0,
+        1,
+        0
+      ],
+      "joint_pos_in_parent": "arm mount point (joint-2 axis of OMX), set by the airframe",
+      "length_to_next_joint_m": 0.130231,
+      "next_frame": "arm_l2",
+      "next_frame_pos": [
+        0.130231,
+        0,
+        0
+      ],
+      "mass_kg": 0.13850917,
+      "com_m": [
+        0.101859756,
+        0.000377434,
+        0.008610674
+      ],
+      "inertia_about_com_kg_m2": {
+        "fullinertia_xx_yy_zz_xy_xz_yz": [
+          5.5574111e-05,
+          0.00034290447,
+          0.000335326197,
+          -1.56288e-06,
+          -1.3052982e-05,
+          -1.93392e-07
+        ],
+        "principal_moments": [
+          5.4957829e-05,
+          0.000335931837,
+          0.000342915112
+        ],
+        "frame": "link frame (x toward next joint, y = joint axis), about CoM"
+      },
+      "range_rad": [
+        -2.885448,
+        0.114552
+      ],
+      "range_source_rad": [
+        -1.5,
+        1.5
+      ],
+      "range_source_noetic_rad": [
+        -1.790708,
+        1.570796
+      ],
+      "angle_map": "q_uam = q_omx_joint2 - theta1",
+      "servo": "XM430-W350-T in OMX link2 (mount, on the airframe) drives arm_j1",
+      "max_velocity_rad_s": 4.8,
+      "mesh": {
+        "file": "meshes/arm_l1.obj",
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "quat_wxyz": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "note": "vertices already expressed in this link frame (meters)",
+        "bounds_m": [
+          [
+            -0.02,
+            -0.026,
+            -0.0234
+          ],
+          [
+            0.1537,
+            0.026,
+            0.0369
+          ]
+        ]
+      }
+    },
+    {
+      "body": "arm_l2",
+      "source_link": "OMX link4",
+      "joint": "arm_j2",
+      "source_joint": "OMX joint3",
+      "joint_axis": [
+        0,
+        1,
+        0
+      ],
+      "joint_pos_in_parent": [
+        0.130231,
+        0,
+        0
+      ],
+      "length_to_next_joint_m": 0.124,
+      "next_frame": "arm_l3",
+      "next_frame_pos": [
+        0.124,
+        0,
+        0
+      ],
+      "mass_kg": 0.13274562,
+      "com_m": [
+        0.09090959,
+        0.000389298,
+        0.000224133
+      ],
+      "inertia_about_com_kg_m2": {
+        "fullinertia_xx_yy_zz_xy_xz_yz": [
+          3.0654178e-05,
+          0.00024230292,
+          0.00025155057,
+          -1.276416e-06,
+          -2.68744e-07,
+          1.156e-08
+        ],
+        "principal_moments": [
+          3.0646154e-05,
+          0.000242310599,
+          0.000251550916
+        ],
+        "frame": "link frame (x toward next joint, y = joint axis), about CoM"
+      },
+      "range_rad": [
+        -0.114552,
+        2.785448
+      ],
+      "range_source_rad": [
+        -1.5,
+        1.4
+      ],
+      "range_source_noetic_rad": [
+        -0.942478,
+        1.382301
+      ],
+      "angle_map": "q_uam = q_omx_joint3 + theta1",
+      "servo": "XM430-W350-T inside arm_l1 (OMX link3) drives arm_j2",
+      "max_velocity_rad_s": 4.8,
+      "mesh": {
+        "file": "meshes/arm_l2.obj",
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "quat_wxyz": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "note": "vertices already expressed in this link frame (meters)",
+        "bounds_m": [
+          [
+            -0.02,
+            -0.0263,
+            -0.0235
+          ],
+          [
+            0.1473,
+            0.0263,
+            0.0235
+          ]
+        ]
+      }
+    },
+    {
+      "body": "arm_l3",
+      "source_link": "OMX link5",
+      "joint": "arm_j3",
+      "source_joint": "OMX joint4",
+      "joint_axis": [
+        0,
+        1,
+        0
+      ],
+      "joint_pos_in_parent": [
+        0.124,
+        0,
+        0
+      ],
+      "length_to_next_joint_m": 0.126,
+      "next_frame": "ee",
+      "next_frame_pos": [
+        0.126,
+        0,
+        0
+      ],
+      "mass_kg": 0.14327573,
+      "com_m": [
+        0.044206755,
+        3.68e-07,
+        0.008914222
+      ],
+      "inertia_about_com_kg_m2": {
+        "fullinertia_xx_yy_zz_xy_xz_yz": [
+          8.0870749e-05,
+          7.5980465e-05,
+          9.3127351e-05,
+          0.0,
+          -1.01579e-06,
+          0.0
+        ],
+        "principal_moments": [
+          7.5980465e-05,
+          8.0787134e-05,
+          9.3210966e-05
+        ],
+        "frame": "link frame (x toward next joint, y = joint axis), about CoM"
+      },
+      "range_rad": [
+        -1.7,
+        1.97
+      ],
+      "range_source_rad": [
+        -1.7,
+        1.97
+      ],
+      "range_source_noetic_rad": [
+        -1.790708,
+        2.042035
+      ],
+      "angle_map": "q_uam = q_omx_joint4",
+      "servo": "XM430-W350-T inside arm_l2 (OMX link4) drives arm_j3; arm_l3 carries the gripper XM430",
+      "max_velocity_rad_s": 4.8,
+      "mesh": {
+        "file": "meshes/arm_l3.obj",
+        "pos": [
+          0,
+          0,
+          0
+        ],
+        "quat_wxyz": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "note": "vertices already expressed in this link frame (meters)",
+        "bounds_m": [
+          [
+            -0.02,
+            -0.0643,
+            -0.023
+          ],
+          [
+            0.0684,
+            0.0643,
+            0.0398
+          ]
+        ]
+      }
+    }
+  ],
+  "ee": {
+    "body": "ee",
+    "site": "ee",
+    "parent": "arm_l3",
+    "pos": [
+      0.126,
+      0,
+      0
+    ],
+    "source": "OMX end_effector_joint origin (0.126, 0, 0) in link5 (between the fingertips)"
+  },
+  "fingers": [
+    {
+      "body": "finger_left",
+      "parent": "arm_l3",
+      "pos": [
+        0.0817,
+        0.021,
+        0.0
+      ],
+      "mesh": "meshes/finger_left.obj",
+      "mass_kg": 0.001,
+      "inertia_diag": [
+        1e-06,
+        1e-06,
+        1e-06
+      ],
+      "note": "OMX prismatic gripper_left_joint frozen at 0; URDF placeholder inertial"
+    },
+    {
+      "body": "finger_right",
+      "parent": "arm_l3",
+      "pos": [
+        0.0817,
+        -0.021,
+        0.0
+      ],
+      "mesh": "meshes/finger_right.obj",
+      "mass_kg": 0.001,
+      "inertia_diag": [
+        1e-06,
+        1e-06,
+        1e-06
+      ],
+      "note": "OMX gripper_right_joint (mimic) frozen at 0; URDF placeholder inertial"
+    }
+  ],
+  "mount": {
+    "body": "arm_mount",
+    "source_link": "OMX link2 (joint2 servo + shoulder bracket; yaw locked)",
+    "mesh": "meshes/arm_mount.obj",
+    "mesh_pose": "vertices in a frame whose origin is the arm_j1 axis",
+    "mass_kg": 0.098406837,
+    "com_m": [
+      -0.000301849,
+      0.000540437,
+      -0.012066536
+    ],
+    "inertia_fullinertia": [
+      3.4543422e-05,
+      3.2689329e-05,
+      1.885032e-05,
+      -1.6031e-08,
+      -3.83752e-07,
+      2.8512e-08
+    ],
+    "bounds_m": [
+      [
+        -0.0235,
+        -0.019,
+        -0.0405
+      ],
+      [
+        0.0235,
+        0.0234,
+        0.0233
+      ]
+    ],
+    "note": "belongs to the airframe (fixed). OMX link1 (yaw servo, 0.0791 kg) not included."
+  },
+  "moving_mass_kg": 0.41653052,
+  "moving_mass_note": "arm_l1 + arm_l2 + arm_l3 + 2 finger palms; excludes mount",
+  "servo": {
+    "model": "DYNAMIXEL XM430-W350-T",
+    "mass_kg": 0.082,
+    "gear_ratio": 353.5,
+    "stall_torque_Nm": {
+      "11.1V": 3.8,
+      "12.0V": 4.1,
+      "14.8V": 4.8
+    },
+    "no_load_speed_rpm": {
+      "11.1V": 43,
+      "12.0V": 46,
+      "14.8V": 57
+    },
+    "voltage_range_V": [
+      10.0,
+      14.8
+    ],
+    "resolution_pulse_per_rev": 4096,
+    "source": "https://emanual.robotis.com/docs/en/dxl/x/xm430-w350/"
+  },
+  "servo_in_sim": {
+    "type": "MuJoCo position",
+    "kp": 20.0,
+    "kv": 0.6,
+    "forcerange_Nm": 4.1,
+    "note": "kp/kv kept from the placeholder (not identified); force limit = XM430-W350 stall torque at 12 V. At 4S (14.8 V) stall is 4.8 N m."
+  },
+  "omx_official": {
+    "weight_kg": 0.7,
+    "payload_kg": 0.5,
+    "reach_m": 0.38,
+    "joint_speed_rpm": 46,
+    "source": "https://emanual.robotis.com/docs/en/platform/openmanipulator_x/specification/"
+  }
+}

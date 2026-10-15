@@ -1,0 +1,100 @@
+<mujoco model="uam_4rotor_arm3">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <visual><global offwidth="1280" offheight="720"/><headlight ambient="0.35 0.35 0.35" diffuse="0.5 0.5 0.5"/></visual>
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.55 0.68 0.82" rgb2="0.12 0.16 0.22" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".15 .2 .25" rgb2=".25 .3 .35" width="512" height="512" mark="edge" markrgb=".3 .35 .4"/>
+    <material name="grid" texture="grid" texrepeat="4 4" texuniform="true" reflectance=".1"/>
+    <mesh name="f450_central_bottom" file="../assets/f450/meshes/f450_central_bottom.obj"/>
+    <mesh name="f450_central_top" file="../assets/f450/meshes/f450_central_top.obj"/>
+    <mesh name="f450_arm" file="../assets/f450/meshes/f450_arm.obj"/>
+    <mesh name="f450_rotor" file="../assets/f450/meshes/f450_rotor.obj"/>
+    <mesh name="f450_prop" file="../assets/f450/meshes/f450_prop.obj"/>
+    <mesh name="f450_leg_170mm" file="../assets/f450/meshes/f450_leg_170mm.obj"/>
+    <mesh name="omx_arm_mount" file="../assets/arm/meshes/arm_mount.obj"/>
+    <mesh name="omx_arm_l1" file="../assets/arm/meshes/arm_l1.obj"/>
+    <mesh name="omx_arm_l2" file="../assets/arm/meshes/arm_l2.obj"/>
+    <mesh name="omx_arm_l3" file="../assets/arm/meshes/arm_l3.obj"/>
+    <mesh name="omx_finger_left" file="../assets/arm/meshes/finger_left.obj"/>
+    <mesh name="omx_finger_right" file="../assets/arm/meshes/finger_right.obj"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 5" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
+    <geom name="ground" type="plane" size="10 10 0.1" material="grid"/>
+    <camera name="side" pos="0 -1.3 1.15" xyaxes="1 0 0 0 0.1 1" fovy="50"/>
+    <body name="base" pos="0 0 1.0">
+      <freejoint name="base_free"/>
+
+      <inertial pos="-0.000024704 0.000044230 0.001467702" mass="1.202406837" fullinertia="1.153472818e-02 1.153285593e-02 2.253388494e-02 -1.291670584e-09 1.053470688e-07 -8.471815867e-07"/>
+      <geom name="base_box" type="box" pos="0 0 -0.03" size="0.09 0.06 0.025" mass="0" contype="1" conaffinity="0" group="3"/>
+      <geom name="plate_bottom" type="mesh" mesh="f450_central_bottom" pos="0 0 -0.05" mass="0" contype="0" conaffinity="0" rgba="0.15 0.15 0.17 1"/>
+      <geom name="plate_top" type="mesh" mesh="f450_central_top" pos="0 0 -0.012" mass="0" contype="0" conaffinity="0" rgba="0.15 0.15 0.17 1"/>
+      <geom name="frame_arm0" type="mesh" mesh="f450_arm" pos="0.045962 -0.045962 -0.012" euler="0 0 -0.785398" mass="0" contype="0" conaffinity="0" rgba="0.92 0.92 0.9 1"/>
+      <geom name="frame_arm1" type="mesh" mesh="f450_arm" pos="0.045962 0.045962 -0.012" euler="0 0 0.785398" mass="0" contype="0" conaffinity="0" rgba="0.92 0.92 0.9 1"/>
+      <geom name="frame_arm2" type="mesh" mesh="f450_arm" pos="-0.045962 -0.045962 -0.012" euler="0 0 -2.356194" mass="0" contype="0" conaffinity="0" rgba="0.92 0.92 0.9 1"/>
+      <geom name="frame_arm3" type="mesh" mesh="f450_arm" pos="-0.045962 0.045962 -0.012" euler="0 0 2.356194" mass="0" contype="0" conaffinity="0" rgba="0.92 0.92 0.9 1"/>
+      <geom name="leg_vis0" type="mesh" mesh="f450_leg_170mm" pos="0.154008 -0.154008 -0.110" euler="0 0 2.356194" mass="0" contype="0" conaffinity="0" rgba="0.92 0.92 0.9 1"/>
+      <geom name="leg0" type="capsule" fromto="0.154008 -0.154008 -0.03 0.154008 -0.154008 -0.19" size="0.008" mass="0" contype="1" conaffinity="0" group="3"/>
+      <geom name="leg_vis1" type="mesh" mesh="f450_leg_170mm" pos="0.154008 0.154008 -0.110" euler="0 0 -2.356194" mass="0" contype="0" conaffinity="0" rgba="0.92 0.92 0.9 1"/>
+      <geom name="leg1" type="capsule" fromto="0.154008 0.154008 -0.03 0.154008 0.154008 -0.19" size="0.008" mass="0" contype="1" conaffinity="0" group="3"/>
+      <geom name="leg_vis2" type="mesh" mesh="f450_leg_170mm" pos="-0.154008 -0.154008 -0.110" euler="0 0 0.785398" mass="0" contype="0" conaffinity="0" rgba="0.85 0.2 0.2 1"/>
+      <geom name="leg2" type="capsule" fromto="-0.154008 -0.154008 -0.03 -0.154008 -0.154008 -0.19" size="0.008" mass="0" contype="1" conaffinity="0" group="3"/>
+      <geom name="leg_vis3" type="mesh" mesh="f450_leg_170mm" pos="-0.154008 0.154008 -0.110" euler="0 0 -0.785398" mass="0" contype="0" conaffinity="0" rgba="0.85 0.2 0.2 1"/>
+      <geom name="leg3" type="capsule" fromto="-0.154008 0.154008 -0.03 -0.154008 0.154008 -0.19" size="0.008" mass="0" contype="1" conaffinity="0" group="3"/>
+      <geom name="arm_mount" type="mesh" mesh="omx_arm_mount" pos="0.0 0.0 0.03" mass="0" contype="0" conaffinity="0" rgba="0.2 0.2 0.2 1"/>
+      <site name="imu" size="0.01"/>
+      <geom name="motor0" type="mesh" mesh="f450_rotor" pos="0.159099026 -0.159099026 -0.012" mass="0" contype="0" conaffinity="0" rgba="0.12 0.12 0.12 1"/>
+      <geom name="prop0" type="mesh" mesh="f450_prop" pos="0.159099026 -0.159099026 0.011500000" euler="0 0 0.00" mass="0" contype="0" conaffinity="0" rgba="0.9 0.45 0.2 0.85"/>
+      <site name="rotor0" pos="0.159099026 -0.159099026 0.011500000" size="0.01"/>
+      <geom name="motor1" type="mesh" mesh="f450_rotor" pos="-0.159099026 0.159099026 -0.012" mass="0" contype="0" conaffinity="0" rgba="0.12 0.12 0.12 1"/>
+      <geom name="prop1" type="mesh" mesh="f450_prop" pos="-0.159099026 0.159099026 0.011500000" euler="0 0 0.60" mass="0" contype="0" conaffinity="0" rgba="0.9 0.45 0.2 0.85"/>
+      <site name="rotor1" pos="-0.159099026 0.159099026 0.011500000" size="0.01"/>
+      <geom name="motor2" type="mesh" mesh="f450_rotor" pos="0.159099026 0.159099026 -0.012" mass="0" contype="0" conaffinity="0" rgba="0.12 0.12 0.12 1"/>
+      <geom name="prop2" type="mesh" mesh="f450_prop" pos="0.159099026 0.159099026 0.011500000" euler="0 0 1.20" mass="0" contype="0" conaffinity="0" rgba="0.25 0.5 0.9 0.85"/>
+      <site name="rotor2" pos="0.159099026 0.159099026 0.011500000" size="0.01"/>
+      <geom name="motor3" type="mesh" mesh="f450_rotor" pos="-0.159099026 -0.159099026 -0.012" mass="0" contype="0" conaffinity="0" rgba="0.12 0.12 0.12 1"/>
+      <geom name="prop3" type="mesh" mesh="f450_prop" pos="-0.159099026 -0.159099026 0.011500000" euler="0 0 1.80" mass="0" contype="0" conaffinity="0" rgba="0.25 0.5 0.9 0.85"/>
+      <site name="rotor3" pos="-0.159099026 -0.159099026 0.011500000" size="0.01"/>
+      <body name="arm_l1" pos="0.0 0.0 0.03">
+        <joint name="arm_j1" type="hinge" axis="0 1 0" range="-2.885448 0.114552" damping="0.02" armature="0.002"/>
+        <inertial pos="0.101859756 0.000377434 0.008610674" mass="0.13850917" fullinertia="5.5574111e-05 0.00034290447 0.000335326197 -1.56288e-06 -1.3052982e-05 -1.93392e-07"/>
+        <geom name="arm_link1" type="mesh" mesh="omx_arm_l1" mass="0" contype="0" conaffinity="0" rgba="0.25 0.45 0.8 1"/>
+        <geom name="arm_link1_col" type="mesh" mesh="omx_arm_l1" mass="0" contype="1" conaffinity="0" group="3"/>
+        <body name="arm_l2" pos="0.130231 0 0">
+        <joint name="arm_j2" type="hinge" axis="0 1 0" range="-0.114552 2.785448" damping="0.02" armature="0.002"/>
+        <inertial pos="0.09090959 0.000389298 0.000224133" mass="0.13274562" fullinertia="3.0654178e-05 0.00024230292 0.00025155057 -1.276416e-06 -2.68744e-07 1.156e-08"/>
+        <geom name="arm_link2" type="mesh" mesh="omx_arm_l2" mass="0" contype="0" conaffinity="0" rgba="0.8 0.45 0.2 1"/>
+        <geom name="arm_link2_col" type="mesh" mesh="omx_arm_l2" mass="0" contype="1" conaffinity="0" group="3"/>
+        <body name="arm_l3" pos="0.124 0 0">
+        <joint name="arm_j3" type="hinge" axis="0 1 0" range="-1.7 1.97" damping="0.02" armature="0.002"/>
+        <inertial pos="0.044206755 3.68e-07 0.008914222" mass="0.14327573" fullinertia="8.0870749e-05 7.5980465e-05 9.3127351e-05 0.0 -1.01579e-06 0.0"/>
+        <geom name="arm_link3" type="mesh" mesh="omx_arm_l3" mass="0" contype="0" conaffinity="0" rgba="0.3 0.65 0.35 1"/>
+        <geom name="arm_link3_col" type="mesh" mesh="omx_arm_l3" mass="0" contype="1" conaffinity="0" group="3"/>
+          <geom name="finger_left" type="mesh" mesh="omx_finger_left" pos="0.0817 0.021 0.0" mass="0" contype="0" conaffinity="0" rgba="0.2 0.2 0.2 1"/>
+          <geom name="finger_right" type="mesh" mesh="omx_finger_right" pos="0.0817 -0.021 0.0" mass="0" contype="0" conaffinity="0" rgba="0.2 0.2 0.2 1"/>
+          <body name="ee" pos="0.126 0 0">
+            <site name="ee" size="0.008" rgba="1 0.2 0.2 1"/>
+            <geom name="tip" type="sphere" size="0.008" mass="0" contype="1" conaffinity="0" rgba="0.95 0.6 0.1 1"/>
+            <camera name="ee_cam" pos="-0.03 0 0.04" xyaxes="0 -1 0 0.6 0 0.8" fovy="90"/>
+          </body>
+        </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general name="thrust0" site="rotor0" gear="0 0 1 0 0 -0.01600" dyntype="filter" dynprm="0.02" gaintype="fixed" gainprm="1" biastype="none" ctrlrange="0 7.848000000000001" ctrllimited="true"/>
+    <general name="thrust1" site="rotor1" gear="0 0 1 0 0 -0.01600" dyntype="filter" dynprm="0.02" gaintype="fixed" gainprm="1" biastype="none" ctrlrange="0 7.848000000000001" ctrllimited="true"/>
+    <general name="thrust2" site="rotor2" gear="0 0 1 0 0 0.01600" dyntype="filter" dynprm="0.02" gaintype="fixed" gainprm="1" biastype="none" ctrlrange="0 7.848000000000001" ctrllimited="true"/>
+    <general name="thrust3" site="rotor3" gear="0 0 1 0 0 0.01600" dyntype="filter" dynprm="0.02" gaintype="fixed" gainprm="1" biastype="none" ctrlrange="0 7.848000000000001" ctrllimited="true"/>
+    <position name="servo1" joint="arm_j1" kp="20.0" kv="0.6" ctrlrange="-2.885448 0.114552" forcerange="-4.1 4.1"/>
+    <position name="servo2" joint="arm_j2" kp="20.0" kv="0.6" ctrlrange="-0.114552 2.785448" forcerange="-4.1 4.1"/>
+    <position name="servo3" joint="arm_j3" kp="20.0" kv="0.6" ctrlrange="-1.7 1.97" forcerange="-4.1 4.1"/>
+  </actuator>
+  <sensor>
+    <gyro name="gyro" site="imu"/>
+    <accelerometer name="accel" site="imu"/>
+    <framepos name="ee_pos" objtype="site" objname="ee"/>
+  </sensor>
+</mujoco>
