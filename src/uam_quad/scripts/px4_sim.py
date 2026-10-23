@@ -16,7 +16,13 @@ ROS 2 topics with --ros (world frame = MuJoCo: x forward/north, y left, z up):
     /arm/joint_states    sensor_msgs/JointState   arm_j1..3 position, velocity        (published, 100 Hz)
     /arm/joint_command   sensor_msgs/JointState   arm_j1..3 target position           (subscribed)
     /sim/ee_position     geometry_msgs/PointStamped  gripper ground truth             (published, 100 Hz)
-    /sim/base_pose       geometry_msgs/PoseStamped   base ground truth                (published, 100 Hz)
+    /sim/base_pose       geometry_msgs/PoseStamped   base ground truth                (published, 125 Hz)
+    /sim/base_twist      geometry_msgs/TwistStamped  true body rates (angular, body FLU) and world
+                                                     velocity (linear)                (published, 250 Hz)
+    /sim/ee_force        geometry_msgs/WrenchStamped end-effector contact force from the board, world
+                                                     frame, 0.1 N noise with --realistic (--scene push; 250 Hz)
+
+    python scripts/px4_sim.py --ros --scene push    # + the vertical board of scripts/push_task.py
 """
 import argparse
 import os
@@ -52,7 +58,7 @@ def start_px4(params, log_path):
 class RosInterface:
     """Arm joint interface + ground truth over ROS 2, spun in a background thread."""
 
-    def __init__(self, bridge, model, data):
+    def __init__(self, bridge, model, data, force_noise=0.1, seed=0):
         import threading
 
         import rclpy
@@ -66,6 +72,13 @@ class RosInterface:
         self.pub_js = self.node.create_publisher(JointState, "/arm/joint_states", 10)
         self.pub_ee = self.node.create_publisher(PointStamped, "/sim/ee_position", 10)
         self.pub_base = self.node.create_publisher(PoseStamped, "/sim/base_pose", 10)
+        from geometry_msgs.msg import TwistStamped, WrenchStamped
+        self.TwistStamped, self.WrenchStamped = TwistStamped, WrenchStamped
+        self.pub_twist = self.node.create_publisher(TwistStamped, "/sim/base_twist", 10)
+        self.pub_force = self.node.create_publisher(WrenchStamped, "/sim/ee_force", 10)
+        self.pub_force_true = self.node.create_publisher(WrenchStamped, "/sim/ee_force_true", 10)
+        self.board_gid = model.geom("board").id if "board" in [model.geom(i).name for i in range(model.ngeom)] else None
+        self.rng, self.force_noise = np.random.default_rng([seed, 11]), force_noise
         self.node.create_subscription(JointState, "/arm/joint_command", self.on_cmd, 10)
         threading.Thread(target=rclpy.spin, args=(self.node,), daemon=True).start()
 
@@ -74,9 +87,22 @@ class RosInterface:
             self.bridge.arm_cmd = np.asarray(msg.position[:3], dtype=float)
 
     def on_step(self, bridge):
-        if bridge.k_step % 2:                      # 125 Hz
-            return
         stamp = self.node.get_clock().now().to_msg()
+        tw = self.TwistStamped()                   # every step: 250 Hz
+        tw.header.stamp, tw.header.frame_id = stamp, "base"
+        tw.twist.angular.x, tw.twist.angular.y, tw.twist.angular.z = map(float, self.d.qvel[3:6])
+        tw.twist.linear.x, tw.twist.linear.y, tw.twist.linear.z = map(float, self.d.qvel[0:3])
+        self.pub_twist.publish(tw)
+        if self.board_gid is not None:             # end-effector force sensor (normal force from the board)
+            from push_task import N_HAT, contact_force
+            F_true = contact_force(self.m, self.d, self.board_gid)
+            for pub, F in ((self.pub_force, F_true + float(self.rng.normal(0.0, self.force_noise))), (self.pub_force_true, F_true)):
+                ws = self.WrenchStamped()
+                ws.header.stamp, ws.header.frame_id = stamp, "world"
+                ws.wrench.force.x, ws.wrench.force.y, ws.wrench.force.z = map(float, -N_HAT * F)
+                pub.publish(ws)
+        if bridge.k_step % 2:                      # the rest at 125 Hz
+            return
         q, qd = bridge.joint_state()
         js = self.JointState(name=["arm_j1", "arm_j2", "arm_j3"], position=q.tolist(), velocity=qd.tolist())
         js.header.stamp = stamp
@@ -101,26 +127,52 @@ def main():
     ap.add_argument("--thr-mdl-fac", type=float, default=1.0)
     ap.add_argument("--no-noise", action="store_true")
     ap.add_argument("--ros", action="store_true", help="ROS 2 arm interface + ground truth topics")
+    ap.add_argument("--scene", choices=["empty", "push"], default="empty", help="push = add the board of push_task.py")
+    ap.add_argument("--realistic", action="store_true",
+                    help="plant mismatch (+10%% airframe mass, 95%% thrust, 30 ms motors) + gusty wind, as in compare_controllers.py")
+    ap.add_argument("--seed", type=int, default=0, help="wind / sensor-noise seed")
     a = ap.parse_args()
 
-    cfg = with_omx_arm(f450_stock())
+    nominal = with_omx_arm(f450_stock())
+    cfg = with_omx_arm(f450_stock(base_mass=nominal.base_mass * 1.10, motor_tau=0.03)) if a.realistic else nominal
     cfg.start_height = 0.2                       # resting on the landing legs
-    model, cfg = load_model(cfg)
+    extra = ""
+    if a.scene == "push":
+        from push_task import SCENE
+        extra = SCENE
+    model, cfg = load_model(cfg, extra_world=extra)
+    if a.realistic:
+        model.actuator_gainprm[:cfg.n_rotors, 0] *= 0.95     # rotors give 95 % of commanded thrust
     data = mujoco.MjData(model)
     qa = [model.jnt_qposadr[model.joint(f"arm_j{i}").id] for i in (1, 2, 3)]
     data.qpos[qa] = TH_NOM
     mujoco.mj_forward(model, data)
 
-    params = px4_params(cfg, a.thr_mdl_fac)
+    params = px4_params(nominal if a.realistic else cfg, a.thr_mdl_fac)    # PX4 is told the nominal airframe
     os.makedirs(RUNS, exist_ok=True)
     px4 = None
     if not a.no_px4:
         # PX4 connects to the bridge's TCP server and retries until the bridge is listening
         px4 = start_px4(params, os.path.join(RUNS, "px4_sitl.log"))
-    bridge = MujocoPX4Bridge(model, data, cfg, TH_NOM, thr_mdl_fac=a.thr_mdl_fac, noise=not a.no_noise)
-    ros = RosInterface(bridge, model, data) if a.ros else None
+    bridge = MujocoPX4Bridge(model, data, cfg, TH_NOM, thr_mdl_fac=a.thr_mdl_fac, noise=not a.no_noise, seed=a.seed)
+    # force-sensor noise only in realistic mode, as push_task.py's "fnoise" factor
+    ros = RosInterface(bridge, model, data, force_noise=0.1 if a.realistic else 0.0, seed=a.seed) if a.ros else None
+    wind_rng, wind = np.random.default_rng([a.seed, 7]), np.zeros(3)
+    WIND_MEAN, WIND_DIR = 0.335, np.array([0.3, 0.15, 0.0]) / np.linalg.norm([0.3, 0.15, 0.0])
+    base_id = model.body("base").id
+
+    def on_step(b):
+        nonlocal wind
+        if a.realistic:                        # Ornstein-Uhlenbeck gusts, as in compare_controllers.py
+            dt = b.dt
+            wind += (-(wind - WIND_MEAN * WIND_DIR) / 1.5) * dt + 1.5 * WIND_MEAN * np.sqrt(2 * dt / 1.5) \
+                * wind_rng.normal(size=3) * np.array([1, 1, 0.3])
+            data.xfrc_applied[base_id, :3] = wind
+        if ros:
+            ros.on_step(b)
+
     try:
-        run(model, data, bridge, realtime=a.realtime, viewer=a.viewer, on_step=ros.on_step if ros else None)
+        run(model, data, bridge, realtime=a.realtime, viewer=a.viewer, on_step=on_step)
     except KeyboardInterrupt:
         pass
     finally:

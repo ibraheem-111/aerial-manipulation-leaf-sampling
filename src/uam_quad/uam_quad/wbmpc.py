@@ -73,7 +73,8 @@ class MPCParams:
     # "rates": u = [collective thrust T, body-rate setpoint w_cmd (3, FLU), q_cmd] -- what PX4 offboard
     # takes (vehicle_rates_setpoint). PX4's rate loop is modelled as a torque source (see WholeBodyModel).
     input_mode: str = "thrusts"
-    tau_rate: float = 0.05        # closed-loop time constant of PX4's rate controller [s]
+    tau_rate: float | tuple = 0.05  # closed-loop time constant of PX4's rate controller [s]: one scalar for all
+                                    # axes, or a per-axis (roll, pitch, yaw) tuple
     w_rate_cmd: tuple = (0.5, 0.5, 0.5)   # cost on the body-rate setpoint (rates mode)
     max_rate: tuple = (3.0, 3.0, 1.5)     # |w_cmd| bounds [rad/s] (rates mode)
     w_thcmd_rel: float = 0.5      # rates mode: cost on q_cmd - q (commanded arm acceleration) instead of q_cmd - q_ref;
@@ -161,12 +162,13 @@ class WholeBodyModel:
             self.base_acc = ca.Function("base_acc", [x, f, thdd_in, f_ext, f_dist], [pdd, wd])  # for validation
         else:
             # PX4's rate loop as a torque source inside the full coupled equations:
-            #   M_rate = J (w_cmd - w) / tau_rate + w x J w - m c x g_B
+            #   M_rate = J diag(1/tau_rate) (w_cmd - w) + w x J w - m c x g_B   (tau_rate scalar or per axis)
             # The last term is the steady gravity moment of the arm-shifted CoM, which the rate loop's
             # integrator cancels. The arm's motion-reaction terms (h_dot, J_dot w, c_ddot) are NOT
             # cancelled, so the MPC still predicts how moving the arm disturbs the base.
             T, w_cmd = f[0], f[1:4]
-            M_rate = J @ (w_cmd - w) / prm.tau_rate + ca.cross(w, J @ w) - m * ca.cross(c, gB)
+            inv_tau = ca.DM(1.0 / np.broadcast_to(np.asarray(prm.tau_rate, dtype=float), (3,)))
+            M_rate = J @ (inv_tau * (w_cmd - w)) + ca.cross(w, J @ w) - m * ca.cross(c, gB)
             F_B = ca.vertcat(0, 0, T) + f_ext_B + R.T @ f_dist
             M_B = M_rate + ca.cross(ee_B, f_ext_B)
             Mmat = ca.vertcat(ca.horzcat(m * ca.DM.eye(3), -m * _hat(c)), ca.horzcat(m * _hat(c), J))
