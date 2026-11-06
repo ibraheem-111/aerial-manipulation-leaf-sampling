@@ -9,7 +9,8 @@ in any SITL run:
 
     python scripts/px4_sim.py                 # headless, real time
     python scripts/px4_sim.py --viewer        # with the MuJoCo viewer
-    python scripts/px4_sim.py --no-px4        # bridge only; start PX4 yourself
+    python scripts/px4_sim.py --no-px4        # bridge only; start PX4 yourself, with the environment from
+    eval "$(python scripts/px4_sim.py --print-px4-env)"   # (same --realistic / --mocap flags as the bridge)
     python scripts/px4_sim.py --ros           # + ROS 2 arm interface and ground truth (needs .venv-ros)
 
 ROS 2 topics with --ros (world frame = MuJoCo: x forward/north, y left, z up):
@@ -165,6 +166,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--viewer", action="store_true")
     ap.add_argument("--no-px4", action="store_true", help="only run the bridge")
+    ap.add_argument("--print-px4-env", action="store_true",
+                    help="print the PX4 environment (airframe params) as export lines and exit, to start PX4 by hand")
     ap.add_argument("--realtime", type=float, default=1.0, help="sim speed vs wall clock; 0 = as fast as possible")
     ap.add_argument("--thr-mdl-fac", type=float, default=1.0)
     ap.add_argument("--no-noise", action="store_true")
@@ -195,6 +198,12 @@ def main():
     if a.mocap:                    # EKF2: external vision for position + yaw, vision height, no GPS / magnetometer
         params.update(EKF2_EV_CTRL=11, EKF2_HGT_REF=3, EKF2_GPS_CTRL=0, EKF2_MAG_TYPE=5, EKF2_EV_NOISE_MD=1,
                       EKF2_EVP_NOISE=0.005, EKF2_EVA_NOISE=0.02, EKF2_EV_DELAY=0.0)
+    else:                          # PX4 defaults, set explicitly: PX4 keeps params in parameters.bson across runs
+        params.update(EKF2_EV_CTRL=0, EKF2_HGT_REF=1, EKF2_GPS_CTRL=7, EKF2_MAG_TYPE=0)
+    if a.print_px4_env:
+        print("export PX4_SIM_MODEL=none_iris")
+        print("\n".join(f"export PX4_PARAM_{k}={v}" for k, v in params.items()))
+        return
     os.makedirs(RUNS, exist_ok=True)
     px4 = None
     if not a.no_px4:
