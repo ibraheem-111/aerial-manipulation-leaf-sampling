@@ -77,6 +77,8 @@ class MPCParams:
                                     # axes, or a per-axis (roll, pitch, yaw) tuple
     w_rate_cmd: tuple = (0.5, 0.5, 0.5)   # cost on the body-rate setpoint (rates mode)
     max_rate: tuple = (3.0, 3.0, 1.5)     # |w_cmd| bounds [rad/s] (rates mode)
+    rate_int_cancels_contact: bool = False   # rates mode: assume PX4's rate integrator also cancels the steady
+                                             # moment of the contact force (r_ee x f_ext), not only gravity's
     w_thcmd_rel: float = 0.5      # rates mode: cost on q_cmd - q (commanded arm acceleration) instead of q_cmd - q_ref;
                                   # damps a 12.5 Hz arm-command limit cycle seen with the weak absolute cost
     codegen_dir: str = field(default_factory=lambda: os.path.join(BUILD, "uam_wbmpc"))
@@ -170,7 +172,9 @@ class WholeBodyModel:
             inv_tau = ca.DM(1.0 / np.broadcast_to(np.asarray(prm.tau_rate, dtype=float), (3,)))
             M_rate = J @ (inv_tau * (w_cmd - w)) + ca.cross(w, J @ w) - m * ca.cross(c, gB)
             F_B = ca.vertcat(0, 0, T) + f_ext_B + R.T @ f_dist
-            M_B = M_rate + ca.cross(ee_B, f_ext_B)
+            # The contact force still accelerates the base (F_B). Its moment about the hub is a steady torque
+            # that PX4's rate integrator removes in steady state; rate_int_cancels_contact models that.
+            M_B = M_rate if prm.rate_int_cancels_contact else M_rate + ca.cross(ee_B, f_ext_B)
             Mmat = ca.vertcat(ca.horzcat(m * ca.DM.eye(3), -m * _hat(c)), ca.horzcat(m * _hat(c), J))
             rhs_t = F_B + m * gB - rhs_corr
             rhs_r = M_B + m * ca.cross(c, gB) - Jdot @ w - ca.cross(w, J @ w) - hdot - ca.cross(w, h)
@@ -207,7 +211,8 @@ class WholeBodyMPC:
         self.th_nom = np.asarray(th_nominal, dtype=float)
 
         am = AcadosModel()
-        am.name = f"uam_wbmpc_{n}r" + ("" if prm.coupling else "_nocpl") + ("_rates" if wb.rates else "")
+        am.name = f"uam_wbmpc_{n}r" + ("" if prm.coupling else "_nocpl") + ("_rates" if wb.rates else "") \
+            + ("_cc" if (wb.rates and prm.rate_int_cancels_contact) else "")
         self.nf = nf = wb.nu_flight
         am.x, am.u, am.p = wb.x, wb.u, wb.p
         xd = ca.SX.sym("xdot", NX)

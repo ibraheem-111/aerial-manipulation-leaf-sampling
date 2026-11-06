@@ -66,7 +66,8 @@ class MpcPx4Node(Node):
         cfg = with_omx_arm(f450_stock())
         model, self.cfg = load_model(cfg)
         prm = MPCParams(arm_wn=25.0, w_base=200.0, input_mode="rates", tau_rate=a.tau_rate,
-                        codegen_dir=os.path.join(BUILD, "uam_wbmpc_px4"))
+                        rate_int_cancels_contact=a.cancel_contact_moment,
+                        codegen_dir=os.path.join(BUILD, "uam_wbmpc_px4" + ("_cc" if a.cancel_contact_moment else "")))
         self.prm = prm
         self.mpc = WholeBodyMPC(model, self.cfg, prm, th_nominal=TH_NOM)
         self.wb = self.mpc.wb
@@ -367,6 +368,8 @@ def main():
     ap.add_argument("--task", choices=["reach", "excite", "push"], default="reach")
     ap.add_argument("--seed", type=int, default=0, help="excitation seed (excite)")
     ap.add_argument("--tag", default="run", help="label for the push result file")
+    ap.add_argument("--cancel-contact-moment", action="store_true",
+                    help="MPC model assumes PX4's rate integrator cancels the contact force's moment (4 N hypothesis)")
     ap.add_argument("--truth-state", action="store_true",
                     help="diagnostic: feed the MPC MuJoCo's true pose/velocity instead of PX4's EKF2 estimate")
     a = ap.parse_args()
