@@ -39,6 +39,7 @@ def main():
     ap.add_argument("--tag", default=None)
     ap.add_argument("--realistic", action="store_true")
     ap.add_argument("--viewer", action="store_true")
+    ap.add_argument("--mocap", action="store_true", help="motion capture into PX4's EKF2 instead of GPS")
     a, node_extra = ap.parse_known_args()
     node_extra = [x for x in node_extra if x != "--"]
     tag = a.tag or f"seed{a.seed}"
@@ -54,14 +55,18 @@ def main():
         sim_cmd.append("--realistic")
     if a.viewer:
         sim_cmd.append("--viewer")
+    if a.mocap:
+        sim_cmd.append("--mocap")
     procs = []
     try:
         procs.append(subprocess.Popen(sim_cmd, stdout=open(stem + "_sim.log", "w"), stderr=subprocess.STDOUT,
                                       cwd=HERE, start_new_session=True))
-        if not wait_for(px4_log, "Ready for takeoff", 90):
-            sys.exit(f"PX4 not ready after 90 s; see {px4_log} and {stem}_sim.log")
+        # the DDS agent starts first: with --mocap, EKF2 only becomes ready once the motion-capture pose
+        # (published over ROS 2) reaches PX4
         procs.append(subprocess.Popen(["MicroXRCEAgent", "udp4", "-p", "8888"], stdout=open(stem + "_agent.log", "w"),
                                       stderr=subprocess.STDOUT, start_new_session=True))
+        if not wait_for(px4_log, "Ready for takeoff", 90):
+            sys.exit(f"PX4 not ready after 90 s; see {px4_log} and {stem}_sim.log")
         time.sleep(4.0)
         node_cmd = [sys.executable, os.path.join(HERE, "mpc_px4_node.py"), "--task", a.task, "--seed", str(a.seed),
                     "--tag", tag, *node_extra]

@@ -77,6 +77,11 @@ class MPCParams:
                                     # axes, or a per-axis (roll, pitch, yaw) tuple
     w_rate_cmd: tuple = (0.5, 0.5, 0.5)   # cost on the body-rate setpoint (rates mode)
     max_rate: tuple = (3.0, 3.0, 1.5)     # |w_cmd| bounds [rad/s] (rates mode)
+    yaw_rate_model: tuple = None  # rates mode: identified PX4 yaw loop (tau, K, theta): tau w_z_dot = K w_cmd,z(t-theta)
+                                  # - w_z, the delay by a 1st-order Pade state (adds one state, NX + 1)
+    rotor_limits: bool = False    # rates mode: soft constraint 0 <= f_i <= f_max on the rotor thrusts implied by
+                                  # (T, the rate-loop torque); without it only the collective T is bounded
+    w_rotor_slack: float = 1e3    # L2 and L1 penalty on violating the rotor-thrust bounds
     rate_int_cancels_contact: bool = False   # rates mode: assume PX4's rate integrator also cancels the steady
                                              # moment of the contact force (r_ee x f_ext), not only gravity's
     w_thcmd_rel: float = 0.5      # rates mode: cost on q_cmd - q (commanded arm acceleration) instead of q_cmd - q_ref;
@@ -98,7 +103,9 @@ class WholeBodyModel:
         rates = prm.input_mode == "rates"
         self.rates = rates
         self.nu_flight = 4 if rates else n         # [T, w_cmd] or rotor thrusts
-        x = ca.SX.sym("x", NX)
+        self.yaw_model = prm.input_mode == "rates" and prm.yaw_rate_model is not None
+        self.nx = NX + (1 if self.yaw_model else 0)
+        x = ca.SX.sym("x", self.nx)
         u = ca.SX.sym("u", self.nu_flight + 3)
         f_ext = ca.SX.sym("f_ext", 3)          # external force on the end effector, world frame [N] (contact)
         f_dist = ca.SX.sym("f_dist", 3)        # estimated disturbance force on the base, world frame [N] (observer)
@@ -169,8 +176,22 @@ class WholeBodyModel:
             # integrator cancels. The arm's motion-reaction terms (h_dot, J_dot w, c_ddot) are NOT
             # cancelled, so the MPC still predicts how moving the arm disturbs the base.
             T, w_cmd = f[0], f[1:4]
-            inv_tau = ca.DM(1.0 / np.broadcast_to(np.asarray(prm.tau_rate, dtype=float), (3,)))
-            M_rate = J @ (inv_tau * (w_cmd - w)) + ca.cross(w, J @ w) - m * ca.cross(c, gB)
+            tau3 = np.array(np.broadcast_to(np.asarray(prm.tau_rate, dtype=float), (3,)), dtype=float)
+            w_tgt = w_cmd
+            if self.yaw_model:
+                # yaw: tau w_z_dot = K w_cmd,z(t - theta) - w_z, with the delay as a first-order Pade state z:
+                #   z_dot = (2/theta)(w_cmd,z - z),  w_cmd,z(t - theta) ~= 2 z - w_cmd,z
+                tau_y, K_y, th_y = prm.yaw_rate_model
+                z_pade = x[NX]
+                self.zdot = (2.0 / th_y) * (w_cmd[2] - z_pade)
+                w_tgt = ca.vertcat(w_cmd[0], w_cmd[1], K_y * (2 * z_pade - w_cmd[2]))
+                tau3[2] = tau_y
+            inv_tau = ca.DM(1.0 / tau3)
+            M_rate = J @ (inv_tau * (w_tgt - w)) + ca.cross(w, J @ w) - m * ca.cross(c, gB)
+            # torque the rotors must actually produce (PX4 output), for the rotor-thrust bounds
+            M_ctrl = M_rate - (ca.cross(ee_B, f_ext_B) if prm.rate_int_cancels_contact else 0)
+            self.rotor_thrusts = ca.solve(ca.DM(A), ca.vertcat(T, M_ctrl)) if A.shape[0] == A.shape[1] \
+                else ca.DM(np.linalg.pinv(A)) @ ca.vertcat(T, M_ctrl)
             F_B = ca.vertcat(0, 0, T) + f_ext_B + R.T @ f_dist
             # The contact force still accelerates the base (F_B). Its moment about the hub is a steady torque
             # that PX4's rate integrator removes in steady state; rate_int_cancels_contact models that.
@@ -187,6 +208,10 @@ class WholeBodyModel:
         qdot = 0.5 * ca.vertcat(-ca.dot(q[1:4], w),
                                 q[0] * w + ca.cross(q[1:4], w))
         xdot = ca.vertcat(v, qdot, ca.substitute(pdd, thdd_in, thdd), ca.substitute(wd, thdd_in, thdd), thd, thdd)
+        if self.yaw_model:
+            xdot = ca.vertcat(xdot, self.zdot)
+        if prm.input_mode == "rates":
+            self.rotor_thrusts = ca.substitute(self.rotor_thrusts, thdd_in, thdd)
 
         self.x, self.u, self.xdot, self.p = x, u, xdot, ca.vertcat(f_ext, f_dist)
         self.thrust_max_total = float(n * cfg.thrust_max)
@@ -212,10 +237,11 @@ class WholeBodyMPC:
 
         am = AcadosModel()
         am.name = f"uam_wbmpc_{n}r" + ("" if prm.coupling else "_nocpl") + ("_rates" if wb.rates else "") \
-            + ("_cc" if (wb.rates and prm.rate_int_cancels_contact) else "")
+            + ("_cc" if (wb.rates and prm.rate_int_cancels_contact) else "") \
+            + ("_yaw" if wb.yaw_model else "") + ("_rl" if (wb.rates and prm.rotor_limits) else "")
         self.nf = nf = wb.nu_flight
         am.x, am.u, am.p = wb.x, wb.u, wb.p
-        xd = ca.SX.sym("xdot", NX)
+        xd = ca.SX.sym("xdot", wb.nx)
         am.xdot = xd
         am.f_expl_expr = wb.xdot
         am.f_impl_expr = xd - wb.xdot
@@ -254,7 +280,16 @@ class WholeBodyMPC:
         ocp.constraints.lbx = np.r_[[-prm.max_tilt] * 2, lo]
         ocp.constraints.ubx = np.r_[[prm.max_tilt] * 2, hi]
         ocp.constraints.idxbx = np.array([4, 5, 13, 14, 15])
-        ocp.constraints.x0 = np.r_[0, 0, 1, 1, 0, 0, 0, np.zeros(6), self.th_nom, np.zeros(3)]
+        ocp.constraints.x0 = np.r_[0, 0, 1, 1, 0, 0, 0, np.zeros(6), self.th_nom, np.zeros(3), np.zeros(wb.nx - NX)]
+        if wb.rates and prm.rotor_limits:
+            # 0 <= f_i <= f_max on the rotor thrusts implied by the plan, softened with slacks so the QP stays
+            # feasible; PX4's mixer clips the real motors either way
+            am.con_h_expr = wb.rotor_thrusts
+            ocp.constraints.lh = np.zeros(n)
+            ocp.constraints.uh = np.full(n, cfg.thrust_max)
+            ocp.constraints.idxsh = np.arange(n)
+            ocp.cost.zl = ocp.cost.zu = np.full(n, prm.w_rotor_slack)
+            ocp.cost.Zl = ocp.cost.Zu = np.full(n, prm.w_rotor_slack)
         ocp.parameter_values = np.zeros(6)
         self.f_ee_param, self.f_dist_param = np.zeros(3), np.zeros(3)
 

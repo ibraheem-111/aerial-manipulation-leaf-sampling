@@ -13,16 +13,21 @@ in any SITL run:
     python scripts/px4_sim.py --ros           # + ROS 2 arm interface and ground truth (needs .venv-ros)
 
 ROS 2 topics with --ros (world frame = MuJoCo: x forward/north, y left, z up):
-    /arm/joint_states    sensor_msgs/JointState   arm_j1..3 position, velocity        (published, 100 Hz)
+    /arm/joint_states    sensor_msgs/JointState   arm_j1..3 position, velocity        (published, 125 Hz)
     /arm/joint_command   sensor_msgs/JointState   arm_j1..3 target position           (subscribed)
-    /sim/ee_position     geometry_msgs/PointStamped  gripper ground truth             (published, 100 Hz)
+    /sim/ee_position     geometry_msgs/PointStamped  gripper ground truth             (published, 125 Hz)
     /sim/base_pose       geometry_msgs/PoseStamped   base ground truth                (published, 125 Hz)
     /sim/base_twist      geometry_msgs/TwistStamped  true body rates (angular, body FLU) and world
                                                      velocity (linear)                (published, 250 Hz)
+    /sim/motor_commands  std_msgs/Float32MultiArray  PX4's 4 motor commands, 0..1      (published, 250 Hz)
     /sim/ee_force        geometry_msgs/WrenchStamped end-effector contact force from the board, world
                                                      frame, 0.1 N noise with --realistic (--scene push; 250 Hz)
 
     python scripts/px4_sim.py --ros --scene push    # + the vertical board of scripts/push_task.py
+    python scripts/px4_sim.py --ros --mocap         # motion capture instead of GPS (as in the lab): the bridge
+                                                    # publishes the true pose + 1 mm / 0.3 deg noise at 125 Hz on
+                                                    # /fmu/in/vehicle_visual_odometry; EKF2 fuses it, GPS and
+                                                    # magnetometer fusion off
 """
 import argparse
 import os
@@ -58,7 +63,7 @@ def start_px4(params, log_path):
 class RosInterface:
     """Arm joint interface + ground truth over ROS 2, spun in a background thread."""
 
-    def __init__(self, bridge, model, data, force_noise=0.1, seed=0):
+    def __init__(self, bridge, model, data, force_noise=0.1, seed=0, mocap=False):
         import threading
 
         import rclpy
@@ -77,10 +82,26 @@ class RosInterface:
         self.pub_twist = self.node.create_publisher(TwistStamped, "/sim/base_twist", 10)
         self.pub_force = self.node.create_publisher(WrenchStamped, "/sim/ee_force", 10)
         self.pub_force_true = self.node.create_publisher(WrenchStamped, "/sim/ee_force_true", 10)
+        from std_msgs.msg import Float32MultiArray
+        self.Float32MultiArray = Float32MultiArray
+        self.pub_motors = self.node.create_publisher(Float32MultiArray, "/sim/motor_commands", 10)
         self.board_gid = model.geom("board").id if "board" in [model.geom(i).name for i in range(model.ngeom)] else None
         self.rng, self.force_noise = np.random.default_rng([seed, 11]), force_noise
+        self.mocap = mocap
+        if mocap:
+            from px4_msgs.msg import VehicleOdometry
+            from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+            self.VehicleOdometry = VehicleOdometry
+            qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             history=HistoryPolicy.KEEP_LAST, depth=1)
+            self.pub_vision = self.node.create_publisher(VehicleOdometry, "/fmu/in/vehicle_visual_odometry", qos)
+            self.mocap_rng = np.random.default_rng([seed, 13])
         self.node.create_subscription(JointState, "/arm/joint_command", self.on_cmd, 10)
         threading.Thread(target=rclpy.spin, args=(self.node,), daemon=True).start()
+
+    def publish_mocap(self):
+        t_us = int(self.node.get_clock().now().nanoseconds / 1000)
+        self.pub_vision.publish(mocap_odometry(self.VehicleOdometry, self.d.qpos, self.mocap_rng, t_us))
 
     def on_cmd(self, msg):
         if len(msg.position) >= 3:
@@ -93,6 +114,7 @@ class RosInterface:
         tw.twist.angular.x, tw.twist.angular.y, tw.twist.angular.z = map(float, self.d.qvel[3:6])
         tw.twist.linear.x, tw.twist.linear.y, tw.twist.linear.z = map(float, self.d.qvel[0:3])
         self.pub_twist.publish(tw)
+        self.pub_motors.publish(self.Float32MultiArray(data=[float(v) for v in bridge.u]))   # PX4 motor commands 0..1
         if self.board_gid is not None:             # end-effector force sensor (normal force from the board)
             from push_task import N_HAT, contact_force
             F_true = contact_force(self.m, self.d, self.board_gid)
@@ -103,6 +125,8 @@ class RosInterface:
                 pub.publish(ws)
         if bridge.k_step % 2:                      # the rest at 125 Hz
             return
+        if self.mocap:
+            self.publish_mocap()
         q, qd = bridge.joint_state()
         js = self.JointState(name=["arm_j1", "arm_j2", "arm_j3"], position=q.tolist(), velocity=qd.tolist())
         js.header.stamp = stamp
@@ -119,6 +143,24 @@ class RosInterface:
         self.pub_base.publish(ps)
 
 
+def mocap_odometry(VehicleOdometry, qpos, rng, t_us):
+    """Motion-capture pose as PX4 external vision: position NED, attitude FRD->NED, no velocity."""
+    S = np.array([1.0, -1.0, -1.0])
+    p = S * qpos[0:3] + rng.normal(0.0, 0.001, 3)                       # 1 mm position noise
+    w, x, y, z = qpos[3:7]
+    dth = rng.normal(0.0, np.radians(0.3), 3)                           # 0.3 deg attitude noise (body frame)
+    dq = np.r_[1.0, 0.5 * dth]
+    q = np.array([w * dq[0] - x * dq[1] - y * dq[2] - z * dq[3], w * dq[1] + x * dq[0] + y * dq[3] - z * dq[2],
+                  w * dq[2] - x * dq[3] + y * dq[0] + z * dq[1], w * dq[3] + x * dq[2] - y * dq[1] + z * dq[0]])
+    q = q / np.linalg.norm(q)
+    nan3 = [float("nan")] * 3
+    return VehicleOdometry(timestamp=t_us, timestamp_sample=t_us, pose_frame=VehicleOdometry.POSE_FRAME_NED,
+                           position=[float(v) for v in p], q=[float(q[0]), float(q[1]), float(-q[2]), float(-q[3])],
+                           velocity_frame=VehicleOdometry.VELOCITY_FRAME_UNKNOWN, velocity=nan3, angular_velocity=nan3,
+                           position_variance=[1e-6] * 3, orientation_variance=[3e-5] * 3, velocity_variance=nan3,
+                           quality=100)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--viewer", action="store_true")
@@ -131,6 +173,7 @@ def main():
     ap.add_argument("--realistic", action="store_true",
                     help="plant mismatch (+10%% airframe mass, 95%% thrust, 30 ms motors) + gusty wind, as in compare_controllers.py")
     ap.add_argument("--seed", type=int, default=0, help="wind / sensor-noise seed")
+    ap.add_argument("--mocap", action="store_true", help="motion capture into EKF2 instead of GPS (needs --ros)")
     a = ap.parse_args()
 
     nominal = with_omx_arm(f450_stock())
@@ -149,6 +192,9 @@ def main():
     mujoco.mj_forward(model, data)
 
     params = px4_params(nominal if a.realistic else cfg, a.thr_mdl_fac)    # PX4 is told the nominal airframe
+    if a.mocap:                    # EKF2: external vision for position + yaw, vision height, no GPS / magnetometer
+        params.update(EKF2_EV_CTRL=11, EKF2_HGT_REF=3, EKF2_GPS_CTRL=0, EKF2_MAG_TYPE=5, EKF2_EV_NOISE_MD=1,
+                      EKF2_EVP_NOISE=0.005, EKF2_EVA_NOISE=0.02, EKF2_EV_DELAY=0.0)
     os.makedirs(RUNS, exist_ok=True)
     px4 = None
     if not a.no_px4:
@@ -156,7 +202,8 @@ def main():
         px4 = start_px4(params, os.path.join(RUNS, "px4_sitl.log"))
     bridge = MujocoPX4Bridge(model, data, cfg, TH_NOM, thr_mdl_fac=a.thr_mdl_fac, noise=not a.no_noise, seed=a.seed)
     # force-sensor noise only in realistic mode, as push_task.py's "fnoise" factor
-    ros = RosInterface(bridge, model, data, force_noise=0.1 if a.realistic else 0.0, seed=a.seed) if a.ros else None
+    ros = RosInterface(bridge, model, data, force_noise=0.1 if a.realistic else 0.0, seed=a.seed,
+                       mocap=a.mocap) if a.ros else None
     wind_rng, wind = np.random.default_rng([a.seed, 7]), np.zeros(3)
     WIND_MEAN, WIND_DIR = 0.335, np.array([0.3, 0.15, 0.0]) / np.linalg.norm([0.3, 0.15, 0.0])
     base_id = model.body("base").id

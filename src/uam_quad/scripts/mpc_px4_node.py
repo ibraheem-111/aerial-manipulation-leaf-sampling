@@ -65,16 +65,23 @@ class MpcPx4Node(Node):
         self.a = a
         cfg = with_omx_arm(f450_stock())
         model, self.cfg = load_model(cfg)
+        yaw = None
+        if a.yaw_model:                                    # identified PX4 yaw loop (scripts/fit_rate_loop.py)
+            fy = json.load(open(os.path.join(RUNS, "px4", "rate_id_fit.json")))["axes"]["yaw"]["full"]
+            yaw = (fy["tau_s"], fy["K"], fy["theta_s"])
+        self.yaw = yaw
+        tag = ("_cc" if a.cancel_contact_moment else "") + ("_yaw" if yaw else "") + ("_rl" if a.rotor_limits else "")
         prm = MPCParams(arm_wn=25.0, w_base=200.0, input_mode="rates", tau_rate=a.tau_rate,
-                        rate_int_cancels_contact=a.cancel_contact_moment,
-                        codegen_dir=os.path.join(BUILD, "uam_wbmpc_px4" + ("_cc" if a.cancel_contact_moment else "")))
+                        rate_int_cancels_contact=a.cancel_contact_moment, yaw_rate_model=yaw,
+                        rotor_limits=a.rotor_limits,
+                        codegen_dir=os.path.join(BUILD, "uam_wbmpc_px4" + tag))
         self.prm = prm
         self.mpc = WholeBodyMPC(model, self.cfg, prm, th_nominal=TH_NOM)
         self.wb = self.mpc.wb
         self.T_max = self.wb.thrust_max_total
         self.u_hover = np.r_[self.wb.mass * 9.81, 0.0, 0.0, 0.0, TH_NOM]
         # gripper offset from the base origin at the nominal arm pose, level attitude
-        x_lvl = np.r_[0, 0, 0, 1, 0, 0, 0, np.zeros(6), TH_NOM, np.zeros(3)]
+        x_lvl = np.r_[0, 0, 0, 1, 0, 0, 0, np.zeros(6), TH_NOM, np.zeros(3), np.zeros(self.wb.nx - 19)]
         self.ee_off = np.asarray(self.wb.f_ee(x_lvl)).ravel()
 
         self.pub_mode = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", PX4_QOS)
@@ -90,6 +97,8 @@ class MpcPx4Node(Node):
         self.create_subscription(WrenchStamped, "/sim/ee_force", self.on_force, 50)
         self.create_subscription(WrenchStamped, "/sim/ee_force_true", self.on_force_true, 50)
         self.create_subscription(PoseStamped, "/sim/base_pose", self.on_pose_truth, 10)
+        from std_msgs.msg import Float32MultiArray
+        self.create_subscription(Float32MultiArray, "/sim/motor_commands", self.on_motors, 50)
         self.twist_log, self.odom_rate_log, self.cmd_log, self.force_log, self.tilt_log = [], [], [], [], []
         self.exc = self.make_excitation(a.seed) if a.task == "excite" else []
         if a.task == "push":
@@ -101,6 +110,8 @@ class MpcPx4Node(Node):
 
         self.odom = None
         self.truth_pose = self.truth_twist = None
+        self.z_pade, self.last_wz_cmd = 0.0, 0.0     # yaw-delay Pade state, propagated from the sent commands
+        self.motor_log = []
         self.th, self.thd = TH_NOM.copy(), np.zeros(3)
         self.armed = self.offboard = False
         self.k = 0
@@ -129,6 +140,11 @@ class MpcPx4Node(Node):
 
     def t_now(self):
         return None if self.t_arm is None else (self.get_clock().now() - self.t_arm).nanoseconds * 1e-9
+
+    def on_motors(self, m):
+        t = self.t_now()
+        if t is not None:
+            self.motor_log.append((t, *m.data))
 
     def on_twist(self, m):
         self.truth_twist = (np.array([m.twist.linear.x, m.twist.linear.y, m.twist.linear.z]),
@@ -186,14 +202,18 @@ class MpcPx4Node(Node):
             # diagnostic: MuJoCo ground truth instead of PX4's EKF2 estimate (z-up world, FLU body)
             p, q = self.truth_pose
             v, w = self.truth_twist
-            return np.r_[p, q / np.linalg.norm(q), v, w, self.th, self.thd]
+            return self.augment(np.r_[p, q / np.linalg.norm(q), v, w, self.th, self.thd])
         o = self.odom
         p = T_FLIP * np.asarray(o.position, dtype=float)
         qn = np.asarray(o.q, dtype=float)                       # w x y z, FRD -> NED
         q = np.array([qn[0], qn[1], -qn[2], -qn[3]])            # FLU -> z-up world
         v = T_FLIP * np.asarray(o.velocity, dtype=float)        # velocity_frame NED
         w = T_FLIP * np.asarray(o.angular_velocity, dtype=float)
-        return np.r_[p, q / np.linalg.norm(q), v, w, self.th, self.thd]
+        return self.augment(np.r_[p, q / np.linalg.norm(q), v, w, self.th, self.thd])
+
+    def augment(self, x):
+        """Append the yaw-delay Pade state when the yaw model is on (it is a controller-internal state)."""
+        return np.r_[x, self.z_pade] if self.yaw else x
 
     # --- outputs --------------------------------------------------------------------------
     def now_us(self):
@@ -205,6 +225,7 @@ class MpcPx4Node(Node):
         self.pub_cmd.publish(m)
 
     def send(self, T, w_flu, q_cmd):
+        self.last_wz_cmd = float(w_flu[2])
         tt = self.t_now()
         if tt is not None and self.a.task == "excite":
             self.cmd_log.append((tt, *map(float, w_flu)))
@@ -302,6 +323,8 @@ class MpcPx4Node(Node):
             self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
             self.finish()
             return
+        if self.yaw:                       # propagate the Pade state over the last 20 ms (exact for a held command)
+            self.z_pade = self.last_wz_cmd + (self.z_pade - self.last_wz_cmd) * np.exp(-2.0 * 0.02 / self.yaw[2])
         x = self.state()
         F_des = self.push_force_loop(t) if self.a.task == "push" else 0.0
         refs = [self.reference(t + j * self.prm.dt) for j in range(self.prm.N + 1)]
@@ -326,6 +349,12 @@ class MpcPx4Node(Node):
         ok = np.mean([r["status"] == 0 for r in L]) * 100
         res = dict(tau_rate=self.a.tau_rate, solver_ok_pct=round(float(ok), 1),
                    solve_ms_median=round(float(np.median(self.mpc.solve_times) * 1e3), 2))
+        if self.motor_log:                  # motor saturation after the climb (t > 6 s): any command at 0 or 1
+            Mo = np.array(self.motor_log)
+            sel = Mo[:, 0] > 6.0
+            U = Mo[sel, 1:5]
+            res["motor_sat_pct"] = round(float(np.mean(np.any((U >= 0.999) | (U <= 0.001), axis=1)) * 100), 2)
+            res["motor_max_cmd"] = round(float(U.max()), 3)
         est = np.array([r["x"][0:3] for r in L]); bref = np.array([r["base_ref"] for r in L])
         sel = t > 6.0
         res["base_rms_mm_estimate"] = round(float(np.sqrt(np.mean(np.sum((est - bref)[sel] ** 2, 1))) * 1e3), 1)
@@ -368,6 +397,10 @@ def main():
     ap.add_argument("--task", choices=["reach", "excite", "push"], default="reach")
     ap.add_argument("--seed", type=int, default=0, help="excitation seed (excite)")
     ap.add_argument("--tag", default="run", help="label for the push result file")
+    ap.add_argument("--yaw-model", action="store_true",
+                    help="use the identified PX4 yaw loop (lag, gain, delay) in the MPC model")
+    ap.add_argument("--rotor-limits", action="store_true",
+                    help="constrain the rotor thrusts implied by the MPC plan to [0, f_max] (soft)")
     ap.add_argument("--cancel-contact-moment", action="store_true",
                     help="MPC model assumes PX4's rate integrator cancels the contact force's moment (4 N hypothesis)")
     ap.add_argument("--truth-state", action="store_true",
