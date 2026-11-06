@@ -99,6 +99,7 @@ class MpcPx4Node(Node):
             self.F_filt, self.delta, self.kappa, self.below_since = 0.0, 0.0, False, None
 
         self.odom = None
+        self.truth_pose = self.truth_twist = None
         self.th, self.thd = TH_NOM.copy(), np.zeros(3)
         self.armed = self.offboard = False
         self.k = 0
@@ -129,6 +130,8 @@ class MpcPx4Node(Node):
         return None if self.t_arm is None else (self.get_clock().now() - self.t_arm).nanoseconds * 1e-9
 
     def on_twist(self, m):
+        self.truth_twist = (np.array([m.twist.linear.x, m.twist.linear.y, m.twist.linear.z]),
+                            np.array([m.twist.angular.x, m.twist.angular.y, m.twist.angular.z]))
         t = self.t_now()
         if t is not None and self.a.task == "excite":
             a = m.twist.angular
@@ -148,6 +151,8 @@ class MpcPx4Node(Node):
             self.force_log.append((t, float(-self.pt.N_HAT @ np.array([m.wrench.force.x, m.wrench.force.y, m.wrench.force.z]))))
 
     def on_pose_truth(self, m):
+        o, pp = m.pose.orientation, m.pose.position
+        self.truth_pose = (np.array([pp.x, pp.y, pp.z]), np.array([o.w, o.x, o.y, o.z]))
         t = self.t_now()
         if t is not None:
             o = m.pose.orientation
@@ -176,6 +181,11 @@ class MpcPx4Node(Node):
         return e
 
     def state(self):
+        if self.a.truth_state and self.truth_pose is not None and self.truth_twist is not None:
+            # diagnostic: MuJoCo ground truth instead of PX4's EKF2 estimate (z-up world, FLU body)
+            p, q = self.truth_pose
+            v, w = self.truth_twist
+            return np.r_[p, q / np.linalg.norm(q), v, w, self.th, self.thd]
         o = self.odom
         p = T_FLIP * np.asarray(o.position, dtype=float)
         qn = np.asarray(o.q, dtype=float)                       # w x y z, FRD -> NED
@@ -357,6 +367,8 @@ def main():
     ap.add_argument("--task", choices=["reach", "excite", "push"], default="reach")
     ap.add_argument("--seed", type=int, default=0, help="excitation seed (excite)")
     ap.add_argument("--tag", default="run", help="label for the push result file")
+    ap.add_argument("--truth-state", action="store_true",
+                    help="diagnostic: feed the MPC MuJoCo's true pose/velocity instead of PX4's EKF2 estimate")
     a = ap.parse_args()
     if len(a.tau_rate) not in (1, 3):
         ap.error("--tau-rate takes 1 or 3 values")
