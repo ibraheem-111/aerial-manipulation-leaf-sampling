@@ -5,6 +5,7 @@
     python scripts/pixhawk_check.py --port udpin:0.0.0.0:14540       # PX4 SITL
     python scripts/pixhawk_check.py --no-stream                      # identity + params only
     python scripts/pixhawk_check.py --seconds 30                     # stream attitude / IMU for 30 s
+    python scripts/pixhawk_check.py --listen-only                    # send nothing; only what the board streams
 
 Prints: USB descriptor (serial ports only), heartbeat, firmware version, board / USB IDs, SYS_AUTOSTART,
 CA_ROTOR_COUNT, battery, serial-port and EKF2 aiding params, then live attitude, body rates (ω_x, ω_y, ω_z)
@@ -20,6 +21,7 @@ import math
 import os
 import struct
 import sys
+import termios
 import time
 
 from pymavlink import mavutil
@@ -79,19 +81,59 @@ def serial_preflight(port):
         sys.exit(2)
     desc = usb_descriptor(port)
     print(f"port {port}: " + (f"USB {desc}" if desc else "no USB descriptor found"))
+    holders = port_holders(port)
+    if holders:                                     # two readers on one port split the byte stream: both break
+        print(f"{port} is already open in: {', '.join(holders)}. Close it (QGroundControl grabs PX4 ports"
+              " automatically) and run again.")
+        sys.exit(2)
+
+
+def port_holders(port):
+    """Other processes with `port` open, from /proc (only processes we may inspect, i.e. our own user's)."""
+    target, me, found = os.path.realpath(port), os.getpid(), []
+    for fd_dir in glob.glob("/proc/[0-9]*/fd"):
+        pid = int(fd_dir.split("/")[2])
+        if pid == me:
+            continue
+        try:
+            if any(os.path.realpath(os.path.join(fd_dir, fd)) == target for fd in os.listdir(fd_dir)):
+                with open(f"/proc/{pid}/comm") as f:
+                    found.append(f"{f.read().strip()} (pid {pid})")
+        except OSError:
+            continue
+    return found
 
 
 class Link:
     """MAVLink connection that keeps the latest message of each type and every PARAM_VALUE it sees."""
 
-    def __init__(self, port, baud):
+    def __init__(self, port, baud, listen_only=False):
         self.c = mavutil.mavlink_connection(port, baud=baud, source_system=255,
                                             source_component=M.MAV_COMP_ID_MISSIONPLANNER, autoreconnect=False)
+        self.is_serial = port.startswith("/dev/")
+        if self.is_serial:
+            self.c.port.write_timeout = 1.0         # a board that stops accepting USB data must not hang us
+        self.listen_only = listen_only
         self.latest = {}
         self.params = {}
         self.last_gcs_hb = 0.0
 
+    @property
+    def tx_ok(self):
+        """False in --listen-only mode, or once a write has timed out (pymavlink then marks the port dead)."""
+        return not self.listen_only and not getattr(self.c, "portdead", False)
+
+    def close(self):
+        if self.is_serial:                          # drop unsent bytes so close() doesn't wait on a stuck board
+            try:
+                termios.tcflush(self.c.port.fileno(), termios.TCOFLUSH)
+            except (OSError, termios.error):
+                pass
+        self.c.close()
+
     def gcs_heartbeat(self):
+        if not self.tx_ok:
+            return
         now = time.monotonic()
         if now - self.last_gcs_hb > 1.0:
             self.c.mav.heartbeat_send(M.MAV_TYPE_GCS, M.MAV_AUTOPILOT_INVALID, 0, 0, M.MAV_STATE_ACTIVE)
@@ -199,7 +241,7 @@ def print_params(link):
 
 
 def stream(link, seconds):
-    for msg_id, hz in [(M.MAVLINK_MSG_ID_ATTITUDE, 10), (M.MAVLINK_MSG_ID_HIGHRES_IMU, 10),
+    for msg_id, hz in [] if not link.tx_ok else [(M.MAVLINK_MSG_ID_ATTITUDE, 10), (M.MAVLINK_MSG_ID_HIGHRES_IMU, 10),
                        (M.MAVLINK_MSG_ID_SYS_STATUS, 2), (M.MAVLINK_MSG_ID_BATTERY_STATUS, 2)]:
         link.command(M.MAV_CMD_SET_MESSAGE_INTERVAL, msg_id, 1e6 / hz)
     print(f"\nlive for {seconds:g} s  (attitude deg, body rates ω rad/s, specific force m/s², battery)")
@@ -218,8 +260,10 @@ def stream(link, seconds):
             amps = "" if ss.current_battery == -1 else f" {ss.current_battery / 100:.1f} A"
             pct = "" if ss.battery_remaining == -1 else f" {ss.battery_remaining}%"
             parts.append(f"bat {ss.voltage_battery / 1000:.2f} V{amps}{pct}")
-        elif bs:
+        elif bs and bs.voltages[0] != 65535:        # 65535 = unknown (no battery / power module reading)
             parts.append(f"bat cells[0] {bs.voltages[0] / 1000:.2f} V")
+        else:
+            parts.append("bat: no reading")
         print("  " + ("  |  ".join(parts) if parts else "(no ATTITUDE / HIGHRES_IMU yet)"), flush=True)
         if "HEARTBEAT" in link.latest and link.latest["HEARTBEAT"].base_mode & M.MAV_MODE_FLAG_SAFETY_ARMED:
             print("  WARNING: vehicle is ARMED")
@@ -232,13 +276,15 @@ def main():
     ap.add_argument("--no-stream", action="store_true", help="skip the live attitude/IMU section")
     ap.add_argument("--seconds", type=float, default=10.0, help="how long to stream live data")
     ap.add_argument("--timeout", type=float, default=10.0, help="seconds to wait for the first heartbeat")
+    ap.add_argument("--listen-only", action="store_true",
+                    help="send nothing at all: heartbeat + whatever the board streams by itself")
     a = ap.parse_args()
 
     is_serial = a.port.startswith("/dev/")
     if is_serial:
         serial_preflight(a.port)
     try:
-        link = Link(a.port, a.baud)
+        link = Link(a.port, a.baud, a.listen_only)
     except Exception as e:                          # serial.SerialException, OSError (busy port, etc.)
         print(f"could not open {a.port}: {e}")
         print("  Is another program holding it (QGroundControl, MAVProxy, ModemManager)?")
@@ -258,8 +304,16 @@ def main():
 
     try:
         print_heartbeat(link, hb)
-        print_version(link)
-        print_params(link)
+        if link.tx_ok:
+            print_version(link)
+        if link.tx_ok:
+            print_params(link)
+        if not link.tx_ok and not a.listen_only:
+            print("\nWRITES TO THE BOARD FAIL: it sends MAVLink but does not accept data from this PC, so firmware"
+                  " version and params can't be requested. Continuing listen-only. On a Cube Black (FMUv3) with"
+                  " stock PX4 1.16/1.17 and an SD card in, this is the board running out of RAM: boot without the"
+                  " card or flash the build from setup/build_px4_fmu_v3_trimmed.sh. Otherwise unplug/replug USB"
+                  " and run again; if it persists, try TELEM1 or another cable/port.")
         if not a.no_stream:
             stream(link, a.seconds)
     except OSError as e:                            # includes serial.SerialException (an IOError subclass)
@@ -267,7 +321,7 @@ def main():
         sys.exit(1)
     except KeyboardInterrupt:
         pass
-    link.c.close()
+    link.close()
 
 
 if __name__ == "__main__":
